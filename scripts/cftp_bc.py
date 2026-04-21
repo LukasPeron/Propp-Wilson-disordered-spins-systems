@@ -1,7 +1,7 @@
 """
 This script implements the Coupling From The Past (CFTP) algorithm with bounding chains for sampling from the Gibbs distribution of disordered spin systems, such as the Ising model on a general graph with arbitrary couplings. The implementation is optimized for efficiency and can handle large systems.
 
-Last edited: 2024-06-20
+Last edited: 2024-21-04
 Author: L. Péron
 """
 
@@ -45,15 +45,18 @@ def F_beta_Metropolis(beta, U):
 ### CFTP with Bounding Chains for Disordered Spin Systems ###
 
 def CFTP_BC_disordered_optimized(beta, G, coupling):
+    t_max = 2**20  # A large negative number to prevent infinite loops in case of non-coalescence
     t = -1
     random_node = []
     random_spin_value = []
     random_real = []
     star = [-1, +1]
     N = G.number_of_nodes()
-    while t > -2**20:
+    while t > -t_max:  # A large negative number to prevent infinite loops in case of non-coalescence
+        nb_star_state = []
         Y = [[-1, +1] for _ in range(N)]  # Initialize the bounding chains to cover all configurations
         for timestep in range(t, 1):
+            nb_star_state.append(sum(1 for v in range(N) if Y[v] == star))
             while len(random_real) < -t:
                 random_real.append(np.random.rand())  # Generate random numbers for updates
                 random_node.append(np.random.randint(N))
@@ -81,8 +84,55 @@ def CFTP_BC_disordered_optimized(beta, G, coupling):
                 
         # Check for coalescence
         if all(len(Y[v])==1 for v in range(N)):
-            return np.array([Y[v][0] for v in range(N)]), t  # Return the coalesced configuration
+            # complete nb_star_state with zeros for the remaining time steps after coalescence
+            return np.array([Y[v][0] for v in range(N)]), t, nb_star_state  # Return the coalesced configuration
         else:
             t *= 2  # Double the time window for the next iteration
     print("Warning: CFTP did not coalesce after a large number of iterations.")
-    return np.array([np.nan for _ in range(N)]), np.nan
+    return np.array([np.nan for _ in range(N)]), np.nan, [np.nan for _ in range(-t)]
+
+def CFTP_BC_disordered_time_in_star(beta, G, coupling):
+    t_max = 2**20  # A large negative number to prevent infinite loops in case of non-coalescence
+    t = -1
+    random_node = []
+    random_spin_value = []
+    random_real = []
+    star = [-1, +1]
+    N = G.number_of_nodes()
+    while t > -t_max:  # A large negative number to prevent infinite loops in case of non-coalescence
+        time_in_star_state = [0 for _ in range(N)]
+        Y = [[-1, +1] for _ in range(N)]  # Initialize the bounding chains to cover all configurations
+        for timestep in range(t, 1):
+            while len(random_real) < -t:
+                random_real.append(np.random.rand())  # Generate random numbers for updates
+                random_node.append(np.random.randint(N))
+                random_spin_value.append(np.random.choice([-1, 1]))
+            actual_random_node = random_node[-timestep-1]
+            actual_random_spin_value = random_spin_value[-timestep-1]
+            actual_random_real = random_real[-timestep-1]
+            if Y[actual_random_node] == star:
+                time_in_star_state[actual_random_node] += 1
+            if Y[actual_random_node] != [actual_random_spin_value]:
+                h_bar = 0
+                m = 0
+                for neighbor in G.neighbors(actual_random_node):
+                    if Y[neighbor] != star:
+                        h_bar += coupling[actual_random_node, neighbor]*Y[neighbor][0]
+                    else:
+                        m += np.abs(coupling[actual_random_node, neighbor])
+                h_minus = h_bar + actual_random_spin_value*m # The "minus" case corresponds to the +s_n value because the sampler are decreasing functions of the local field
+                h_plus = h_bar - actual_random_spin_value*m
+                if actual_random_real < F_beta_Glauber(beta, -2*actual_random_spin_value*h_plus):
+                    Y[actual_random_node] = [actual_random_spin_value]
+                elif actual_random_real > F_beta_Glauber(beta, -2*actual_random_spin_value*h_minus) and Y[actual_random_node] == [-actual_random_spin_value]:
+                    continue
+                else:
+                    Y[actual_random_node] = star
+                
+        # Check for coalescence
+        if all(len(Y[v])==1 for v in range(N)):
+            return np.array([Y[v][0] for v in range(N)]), t, time_in_star_state  # Return the coalesced configuration
+        else:
+            t *= 2  # Double the time window for the next iteration
+    print("Warning: CFTP did not coalesce after a large number of iterations.")
+    return np.array([np.nan for _ in range(N)]), np.nan, [np.nan for _ in range(N)]

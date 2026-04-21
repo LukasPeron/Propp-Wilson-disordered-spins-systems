@@ -1,7 +1,7 @@
 """
 This script performs theoretical calculations for the Curie-Weiss model and compares them with results obtained from CFTP sampling. It computes the partition function, magnetization, and magnetization variance for a complete graph of 100 nodes across a range of inverse temperatures (beta). The results are averaged over multiple runs to reduce noise and are intended to be plotted for comparison with theoretical predictions.
 
-Last edited: 2024-06-20
+Last edited: 2024-18-04
 Author: L. Péron
 """
 
@@ -92,3 +92,4 @@ plt.xlabel(r'Inverse Temperature $\beta$')
 plt.ylabel('Magnetization')
 plt.legend(loc="center left")
 plt.savefig('../figures/CW_magnetization_comparison.png')
+plt.savefig('../figures/CW_magnetization_comparison.svg')
