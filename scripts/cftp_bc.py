@@ -1,13 +1,13 @@
 """
 This script implements the Coupling From The Past (CFTP) algorithm with bounding chains for sampling from the Gibbs distribution of disordered spin systems, such as the Ising model on a general graph with arbitrary couplings. The implementation is optimized for efficiency and can handle large systems.
 
-Last edited: 2024-21-04
 Author: L. Péron
 """
 
 import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
+import cmcrameri.cm as cmc
 
 plt.rcParams.update({
     'figure.figsize': (8, 6),
@@ -34,13 +34,13 @@ plt.rcParams.update({
 ### Sampling functions ###
 
 def F_beta_Glauber(beta, U):
-    return 1 / (1 + np.exp(2 * beta * U))
+    return 1 / (1 + np.exp(beta * U))
 
 def F_beta_Metropolis(beta, U):
     if U <= 0:
         return 1
     else:
-        return np.exp(-2 * beta * U)
+        return np.exp(-beta * U)
 
 ### CFTP with Bounding Chains for Disordered Spin Systems ###
 
@@ -55,7 +55,7 @@ def CFTP_BC_disordered_optimized(beta, G, coupling):
     while t > -t_max:  # A large negative number to prevent infinite loops in case of non-coalescence
         nb_star_state = []
         Y = [[-1, +1] for _ in range(N)]  # Initialize the bounding chains to cover all configurations
-        for timestep in range(t, 1):
+        for timestep in range(t, 0):
             nb_star_state.append(sum(1 for v in range(N) if Y[v] == star))
             while len(random_real) < -t:
                 random_real.append(np.random.rand())  # Generate random numbers for updates
@@ -85,6 +85,7 @@ def CFTP_BC_disordered_optimized(beta, G, coupling):
         # Check for coalescence
         if all(len(Y[v])==1 for v in range(N)):
             # complete nb_star_state with zeros for the remaining time steps after coalescence
+            print(f"Coalescence achieved at time {-t}.")
             return np.array([Y[v][0] for v in range(N)]), t, nb_star_state  # Return the coalesced configuration
         else:
             t *= 2  # Double the time window for the next iteration
@@ -102,7 +103,7 @@ def CFTP_BC_disordered_time_in_star(beta, G, coupling):
     while t > -t_max:  # A large negative number to prevent infinite loops in case of non-coalescence
         time_in_star_state = [0 for _ in range(N)]
         Y = [[-1, +1] for _ in range(N)]  # Initialize the bounding chains to cover all configurations
-        for timestep in range(t, 1):
+        for timestep in range(t, 0):
             while len(random_real) < -t:
                 random_real.append(np.random.rand())  # Generate random numbers for updates
                 random_node.append(np.random.randint(N))
@@ -131,8 +132,62 @@ def CFTP_BC_disordered_time_in_star(beta, G, coupling):
                 
         # Check for coalescence
         if all(len(Y[v])==1 for v in range(N)):
+            print(f"Coalescence achieved at time {-t}.")
             return np.array([Y[v][0] for v in range(N)]), t, time_in_star_state  # Return the coalesced configuration
         else:
             t *= 2  # Double the time window for the next iteration
     print("Warning: CFTP did not coalesce after a large number of iterations.")
     return np.array([np.nan for _ in range(N)]), np.nan, [np.nan for _ in range(N)]
+
+def MCMC2_fwd(beta, G, couplings, n_iter=100000):
+    N = G.number_of_nodes()
+    config = np.random.choice([-1, 1], size=N)  # Random initial configuration
+    for _ in range(n_iter):
+        if _ % (n_iter // 10) == 0:
+            print(f"Iteration {_}/{n_iter}")
+        v = np.random.randint(N)  # Randomly select a node
+        s = np.random.choice([-1, 1])  # Randomly select a spin value
+        r = np.random.rand()  # Random number for acceptance
+        if config[v] != s:
+            h = sum(couplings[v, neighbor] * config[neighbor] for neighbor in G.neighbors(v))
+            if r < F_beta_Glauber(beta, 2*config[v]*h):
+                config[v] = -config[v]  # Flip the spin
+    magnetization = np.mean(config)
+    print(f"Final magnetization: {magnetization:.4f}")
+    return config, magnetization
+
+def BC_fwd(beta, G, couplings, n_iter=100000):
+    N = G.number_of_nodes()
+    star = [1, -1]
+    options = [[1], [-1], star]
+    random_indices = np.random.choice(len(options), size=N)
+    config = [options[i] for i in random_indices]
+    for _ in range(n_iter):
+        if _ % (n_iter // 10) == 0:
+            print(f"Iteration {_}/{n_iter}")
+        v = np.random.randint(N)  # Randomly select a node
+        s = np.random.choice([-1, 1])  # Randomly select a spin value
+        r = np.random.rand()  # Random number for acceptance
+        if config[v] != [s]:
+            h_bar = 0
+            m = 0
+            for neighbor in G.neighbors(v):
+                if config[neighbor] != star:
+                    h_bar += couplings[v, neighbor]*config[neighbor][0]
+                else:
+                    m += np.abs(couplings[v, neighbor])
+            h_minus = h_bar + s*m # The "minus" case corresponds to the +s_n value because the sampler are decreasing functions of the local field
+            h_plus = h_bar - s*m
+            if r < F_beta_Glauber(beta, -2*s*h_plus):
+                config[v] = [s]
+            elif r > F_beta_Glauber(beta, -2*s*h_minus) and config[v] == [-s]:
+                continue
+            else:
+                config[v] = star
+        if all(len(config[v])==1 for v in range(N)):
+            print(f"Coalescence achieved at iteration {_}")
+            magnetization = np.mean([config[v][0] for v in range(N)])
+            print(f"Final magnetization: {magnetization:.4f}")
+            return np.array([config[v][0] for v in range(N)]), magnetization
+    print("Warning: Coalescence not achieved after a large number of iterations.")
+    return np.array([np.nan for _ in range(N)]), np.nan

@@ -1,7 +1,6 @@
 """
 This script performs theoretical calculations for the Curie-Weiss model and compares them with results obtained from CFTP sampling. It computes the partition function, magnetization, and magnetization variance for a complete graph of 100 nodes across a range of inverse temperatures (beta). The results are averaged over multiple runs to reduce noise and are intended to be plotted for comparison with theoretical predictions.
 
-Last edited: 2024-18-04
 Author: L. Péron
 """
 
@@ -64,17 +63,17 @@ def theoretical_magnetization_variance(beta, N):
 
 N = 100
 G = nx.complete_graph(N)
-couplings = 1/2 * (np.ones((N, N)) - np.eye(N)) / N
+couplings = (np.ones((N, N)) - np.eye(N)) / N
 
-betas = np.linspace(0, 1.2, 100)
+betas = np.linspace(0, 1.2, 20)
 magnetizations = []
 theoretical_magnetizations = [theoretical_magnetization(b, N) for b in betas]
 theoretical_magnetization_variances = [theoretical_magnetization_variance(b, N) for b in betas]
 for beta in betas:
     print(f"Processing beta={beta:.2f}...")
     temp = []
-    for _ in range(50):  # Average over multiple runs to reduce noise
-        config, time = CFTP_BC_disordered_optimized(beta=beta, G=G, coupling=couplings)
+    for _ in range(10):  # Average over multiple runs to reduce noise
+        config, time, _ = CFTP_BC_disordered_optimized(beta=beta, G=G, coupling=couplings)
         magnetization = np.abs(np.mean(config))
         temp.append(magnetization)
     magnetizations.append(np.mean(temp))
