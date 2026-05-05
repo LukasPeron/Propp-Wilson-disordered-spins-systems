@@ -7,7 +7,10 @@ Author: L. Péron
 import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
+import matplotlib as mpl
+from matplotlib.colors import LogNorm
 import cmcrameri.cm as cmc
+from scipy.optimize import fsolve
 
 plt.rcParams.update({
     'figure.figsize': (8, 6),
@@ -30,6 +33,30 @@ plt.rcParams.update({
     # remove the box around the legend
     'legend.frameon': False
 })
+
+def solve_self_consistent_beta(N, initial_guess=1.0):
+    """
+    Finds the root beta for the self-consistent equation given a finite N.
+    """
+    def equation(beta):
+        # Left-hand side: beta * sqrt(N) * (1 - tanh^2(beta))
+        lhs = beta * np.sqrt(N) * (1 - np.tanh(beta)**2)
+        
+        # Right-hand side: 1 - (tanh^2(beta) * beta^2) / N
+        rhs = 1 - (np.tanh(beta)**2 * beta**2) / N
+        
+        # We want to find where lhs == rhs, so we return lhs - rhs
+        return lhs - rhs
+
+    # fsolve returns an array, so we extract the first (and only) element
+    beta_solution, info, ier, mesg = fsolve(equation, x0=initial_guess, full_output=True)
+    
+    if ier == 1:
+        return beta_solution[0]
+    else:
+        raise ValueError(f"fsolve failed to converge for N={N}: {mesg}")
+
+save_path = "/home/lperon/cftp_dis_spin/figures/"
 
 ### Sampling functions ###
 
@@ -90,7 +117,7 @@ def CFTP_BC_disordered_optimized(beta, G, coupling):
         else:
             t *= 2  # Double the time window for the next iteration
     print("Warning: CFTP did not coalesce after a large number of iterations.")
-    return np.array([np.nan for _ in range(N)]), np.nan, [np.nan for _ in range(-t)]
+    return np.array([np.nan for _ in range(N)]), np.nan, nb_star_state
 
 def CFTP_BC_disordered_time_in_star(beta, G, coupling):
     t_max = 2**20  # A large negative number to prevent infinite loops in case of non-coalescence
@@ -103,6 +130,7 @@ def CFTP_BC_disordered_time_in_star(beta, G, coupling):
     while t > -t_max:  # A large negative number to prevent infinite loops in case of non-coalescence
         time_in_star_state = [0 for _ in range(N)]
         Y = [[-1, +1] for _ in range(N)]  # Initialize the bounding chains to cover all configurations
+        has_coalesced = False
         for timestep in range(t, 0):
             while len(random_real) < -t:
                 random_real.append(np.random.rand())  # Generate random numbers for updates
@@ -129,15 +157,19 @@ def CFTP_BC_disordered_time_in_star(beta, G, coupling):
                     continue
                 else:
                     Y[actual_random_node] = star
-                
+                if all(len(Y[v])==1 for v in range(N)) and not has_coalesced:
+                    print(f"Coalescence achieved at time {-timestep}.")
+                    has_coalesced = True
+                    coal_time = timestep
+
         # Check for coalescence
         if all(len(Y[v])==1 for v in range(N)):
-            print(f"Coalescence achieved at time {-t}.")
-            return np.array([Y[v][0] for v in range(N)]), t, time_in_star_state  # Return the coalesced configuration
+            # print(f"Coalescence achieved at time {-t}.")
+            return np.array([Y[v][0] for v in range(N)]), coal_time, time_in_star_state  # Return the coalesced configuration
         else:
             t *= 2  # Double the time window for the next iteration
     print("Warning: CFTP did not coalesce after a large number of iterations.")
-    return np.array([np.nan for _ in range(N)]), np.nan, [np.nan for _ in range(N)]
+    return np.array([np.nan for _ in range(N)]), -t_max, [np.nan for _ in range(N)]
 
 def MCMC2_fwd(beta, G, couplings, n_iter=100000):
     N = G.number_of_nodes()
@@ -156,15 +188,15 @@ def MCMC2_fwd(beta, G, couplings, n_iter=100000):
     print(f"Final magnetization: {magnetization:.4f}")
     return config, magnetization
 
-def BC_fwd(beta, G, couplings, n_iter=100000):
+def BC_fwd(beta, G, couplings, n_iter=2**20):
     N = G.number_of_nodes()
     star = [1, -1]
     options = [[1], [-1], star]
     random_indices = np.random.choice(len(options), size=N)
     config = [options[i] for i in random_indices]
-    for _ in range(n_iter):
-        if _ % (n_iter // 10) == 0:
-            print(f"Iteration {_}/{n_iter}")
+    nb_star_state = []
+    nb_star_state.append(sum(1 for v in range(N) if config[v] == star))
+    for timestep in range(n_iter):
         v = np.random.randint(N)  # Randomly select a node
         s = np.random.choice([-1, 1])  # Randomly select a spin value
         r = np.random.rand()  # Random number for acceptance
@@ -184,10 +216,9 @@ def BC_fwd(beta, G, couplings, n_iter=100000):
                 continue
             else:
                 config[v] = star
+        nb_star_state.append(sum(1 for v in range(N) if config[v] == star))
         if all(len(config[v])==1 for v in range(N)):
-            print(f"Coalescence achieved at iteration {_}")
-            magnetization = np.mean([config[v][0] for v in range(N)])
-            print(f"Final magnetization: {magnetization:.4f}")
-            return np.array([config[v][0] for v in range(N)]), magnetization
+            print(f"Coalescence achieved at iteration {timestep}")
+            return nb_star_state, timestep
     print("Warning: Coalescence not achieved after a large number of iterations.")
-    return np.array([np.nan for _ in range(N)]), np.nan
+    return nb_star_state, n_iter
