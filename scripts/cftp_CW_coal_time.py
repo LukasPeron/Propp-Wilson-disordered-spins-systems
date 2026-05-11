@@ -1,17 +1,16 @@
 """
-This script is made to analyze the coalescence time of the CFTP algorithm for the following spin systems:
-- Curie-Weiss model (complete graph with uniform couplings)
-Three plot are done for each model: a heatmap of the coalescence time as a function of beta and N, a plot of the coalescence time as a function of beta for different values of N, and a plot of the coalescence time as a function of N for different values of beta.
-Author: L. Péron
+This script is made to analyze the coalescence time of the BC algorithm for the Curie-Weiss model at different sizes and different values of beta. 
 """
 
 from cftp_my_lib import *
 
 N_list = [100, 200, 500, 750, 1000]
-beta_c = 1.0
-max_beta = beta_c * 1.5
+beta_pm = 1.0
+max_beta = beta_pm * 1.5
 save_name = "CW"
+print(f"beta_BD = {beta_pm}", max_beta)
+betas = np.linspace(0, max_beta, 51, endpoint=True)
+for beta in betas:
+    Coal_time(N_list=N_list, beta=beta, d=np.nan, beta_c=beta_pm, max_beta=max_beta, save_name=save_name, n_runs=10)
 
-Coal_time(N_list=N_list, d=np.nan, beta_c=beta_c, max_beta=max_beta, save_name=save_name, n_runs=25)
-
-Plot_coal_time(save_name=save_name, beta_BD = np.nan, beta_c=beta_c, max_beta=max_beta)
+Plot_coal_time(save_name=save_name, beta_BD = np.nan, beta_c=beta_pm, max_beta=max_beta)
