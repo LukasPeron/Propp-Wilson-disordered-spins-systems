@@ -2,7 +2,7 @@
 This script is made to analyze the coalescence time of the BC algorithm for a disordered spin system on an RR graph at different sizes and different values of beta. 
 """
 
-from cftp_my_lib import *
+from utils.cftp_func import *
 
 d=4
 beta_SG = np.arctanh(np.sqrt(1/d))

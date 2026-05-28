@@ -7,11 +7,15 @@ from numba import njit
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
 import matplotlib as mpl
 from matplotlib.colors import LogNorm
 import cmcrameri.cm as cmc
 from scipy.optimize import fsolve
 from scipy.special import gammaln
+from scipy.special import ellipk
+from sklearn.metrics import r2_score
+from scipy.optimize import curve_fit
 
 plt.rcParams.update({
     'figure.figsize': (8, 6),
@@ -35,6 +39,9 @@ plt.rcParams.update({
     'legend.frameon': False
 })
 
+save_path = "/home/lperon/cftp_dis_spin/"
+max_nb_iter_MCMC2_BC = 2**22
+
 def solve_self_consistent_beta(N, initial_guess=1.0):
     """
     Finds the root beta for the self-consistent equation given a finite N.
@@ -57,6 +64,45 @@ def solve_self_consistent_beta(N, initial_guess=1.0):
     else:
         raise ValueError(f"fsolve failed to converge for N={N}: {mesg}")
 
+def create_ER_graph(N, d):
+    G = nx.erdos_renyi_graph(N, d/N)
+    couplings = np.triu(np.random.choice([-1, 1], size=(N, N)), k=1)
+    couplings += couplings.T  # account for the fact that the graph is not oriented
+    couplings = couplings * nx.to_numpy_array(G)
+    return G, couplings
+
+def create_RR_graph(N, d):
+    G = nx.random_regular_graph(d, N)
+    couplings = np.triu(np.random.choice([-1, 1], size=(N, N)), k=1)
+    couplings += couplings.T  # account for the fact that the graph is not oriented
+    couplings = couplings * nx.to_numpy_array(G)
+    return G, couplings
+
+def create_lattice_graph(L, d, model, periodic=True):
+    if d == 2:
+        G = nx.grid_graph(dim=[L]*2, periodic=periodic)
+    elif d == 3:
+        G = nx.grid_graph(dim=[L]*3, periodic=periodic)
+    N = L**d
+    if model=="RL_ferr":
+        couplings = np.ones((N, N)) - np.eye(N)
+    elif model=="RL_sg":
+        couplings = np.triu(np.random.choice([-1, 1], size=(N, N)), k=1)
+        couplings += couplings.T
+        couplings = couplings * nx.to_numpy_array(G)
+    
+    return G, couplings
+
+def create_complete_graph(N, model):
+    G = nx.complete_graph(N)
+    if model=="CW":
+        couplings = (np.ones((N, N)) - np.eye(N))/N
+    elif model=="SK":
+        couplings = np.random.normal(0, 1/np.sqrt(N), size=(N, N))
+        couplings = (couplings + couplings.T) / 2
+        np.fill_diagonal(couplings, 0)
+    return G, couplings
+
 def max_deg_ER_graph(N, d, initial_guess=5.0):
     def equation(k):
         lhs = k*(np.log(d)-np.log(k)+1)
@@ -67,9 +113,6 @@ def max_deg_ER_graph(N, d, initial_guess=5.0):
         return k_solution[0]
     else:
         raise ValueError(f"fsolve failed to converge for max degree: {mesg}")
-
-save_path = "/home/lperon/cftp_dis_spin/"
-max_nb_iter_MCMC2_BC = 2**20
 
 @njit
 def F_beta_Glauber(beta, U):
@@ -106,12 +149,25 @@ def theoretical_mag_lattice(beta, d):
     # for the 3D lattice, there is no exact solution, but we can use numerical estimates for the critical beta
     # beta_c for 3D is approximately 0.2216544
     if d==3:
-        beta_c_3D = 0.2216544
+        beta_c_3D = 0.221654626
         if beta < beta_c_3D:
             return 0.0
         else:
             # We can use a simple power law fit for the magnetization near the critical point
-            return (1 - (beta_c_3D / beta)**2)**0.326419
+            return (1 - (beta_c_3D / beta)**2)**0.32653 #value of beta reported in Campostrini et al 2002
+
+def theo_energy_per_site_ising_2d(beta):
+    if beta == 0:
+        return 0.0
+    x = 2 * beta
+    k = 1.0 / (np.sinh(x)**2)
+    m = (4.0 * k) / ((1.0 + k)**2)
+    integral_val = ellipk(m)
+    coth_x = 1.0 / np.tanh(x)
+    tanh2_x = np.tanh(x)**2
+    bracket_term = 1.0 + (2.0 / np.pi) * (2.0 * tanh2_x - 1.0) * integral_val
+    U = -coth_x * bracket_term
+    return U
 
 @njit
 def _cftp_numba_core(beta, N, adj_indices, adj_indptr, adj_weights, adj_abs_weights, M_init, max_iter):
@@ -160,13 +216,13 @@ def _cftp_numba_core(beta, N, adj_indices, adj_indptr, adj_weights, adj_abs_weig
                 h_bar = H_bar[v]
                 m = M[v]
 
-                h_minus = h_bar + s * m
-                h_plus = h_bar - s * m
+                h_plus = h_bar + s * m
+                h_minus = h_bar - s * m
 
                 # Evaluate Transition
-                if r < F_beta_Glauber(beta, -2 * s * h_plus):
+                if r < F_beta_Glauber(beta, -2 * s * h_minus):
                     new_state = s
-                elif r > F_beta_Glauber(beta, -2 * s * h_minus) and current_state == -s:
+                elif r > F_beta_Glauber(beta, -2 * s * h_plus) and current_state == -s:
                     new_state = -s
                 else:
                     new_state = 0
@@ -260,36 +316,143 @@ def CFTP_MCMC2_BC(beta, G, couplings, max_nb_iter_MCMC2_BC=max_nb_iter_MCMC2_BC)
     print(f"Coalescence achieved at time {final_t}.")
     return config, final_t, nb_star_state.tolist()
 
-def MCMC2_fwd(beta, G, couplings, max_nb_iter_MCMC2=max_nb_iter_MCMC2_BC):
+@njit
+def _mcmc2_standard_numba_core(config, beta, N, adj_indices, adj_indptr, adj_weights, max_iter):
+    # # 1. Initialize random configuration (+1 or -1)
+    # config = np.empty(N, dtype=np.int8)
+    # for i in range(N):
+    #     config[i] = 1 if np.random.rand() < 0.5 else -1
+        
+    H = np.zeros(N, dtype=np.float64)
+    
+    # 2. Pre-calculate the initial local field (H) for all nodes
+    for v in range(N):
+        state_v = config[v]
+        start_idx = adj_indptr[v]
+        end_idx = adj_indptr[v + 1]
+        
+        for i in range(start_idx, end_idx):
+            u = adj_indices[i]
+            w = adj_weights[i]
+            H[u] += w * state_v
+
+    # 3. Main MCMC Loop
+    for timestep in range(max_iter):
+        v = np.random.randint(0, N)
+        s = 1 if np.random.rand() < 0.5 else -1
+        
+        current_state = config[v]
+
+        if current_state != s:
+            r = np.random.rand()
+            h = H[v]
+            
+            # Evaluate Transition
+            if r < F_beta_Glauber(beta, 2 * current_state * h):
+                new_state = -current_state
+                config[v] = new_state
+                
+                # Dynamic Update: If node v flips, update H for all its neighbors
+                start_idx = adj_indptr[v]
+                end_idx = adj_indptr[v + 1]
+                
+                for i in range(start_idx, end_idx):
+                    u = adj_indices[i]
+                    w = adj_weights[i]
+                    # Since it flips from state to -state, the difference is 2 * new_state
+                    H[u] += 2 * w * new_state
+
+    # Calculate final magnetization directly in C-speed
+    mag_sum = 0.0
+    for i in range(N):
+        mag_sum += config[i]
+        
+    return config, mag_sum / N
+
+def MCMC2_fwd(beta, G, couplings, config, max_nb_iter_MCMC2=max_nb_iter_MCMC2_BC):
     N = G.number_of_nodes()
-    config = np.random.choice([-1, 1], size=N)  # Random initial configuration
-    for _ in range(max_nb_iter_MCMC2):
-        if _ % (max_nb_iter_MCMC2 // 10) == 0:
-            print(f"Iteration {_}/{n_iter}")
-        v = np.random.randint(N)  # Randomly select a node
-        s = np.random.choice([-1, 1])  # Randomly select a spin value
-        r = np.random.rand()  # Random number for acceptance
-        if config[v] != s:
-            h = sum(couplings[v, neighbor] * config[neighbor] for neighbor in G.neighbors(v))
-            if r < F_beta_Glauber(beta, 2*config[v]*h):
-                config[v] = -config[v]  # Flip the spin
-    magnetization = np.mean(config)
+    
+    # Map nodes to integer indices 0...N-1 to align with Numba's arrays
+    node_list = list(G.nodes())
+    node_to_idx = {node: idx for idx, node in enumerate(node_list)}
+    
+    # 1. Count total edges to allocate flat arrays
+    edges_count = sum(1 for v in node_list for _ in G.neighbors(v))
+    
+    # 2. Allocate CSR-style flat arrays
+    # Note: We don't need adj_abs_weights here because there are no 'star' states!
+    adj_indices = np.zeros(edges_count, dtype=np.int32)
+    adj_weights = np.zeros(edges_count, dtype=np.float64)
+    adj_indptr = np.zeros(N + 1, dtype=np.int32)
+    
+    # 3. Populate arrays
+    ptr = 0
+    for i, v_node in enumerate(node_list):
+        adj_indptr[i] = ptr
+        for u_node in G.neighbors(v_node):
+            j = node_to_idx[u_node]
+            w = couplings[j, i]
+            
+            adj_indices[ptr] = j
+            adj_weights[ptr] = w
+            ptr += 1
+            
+    adj_indptr[N] = ptr 
+    
+    # 4. Pass to the Numba core
+    final_config, magnetization = _mcmc2_standard_numba_core(
+        config,
+        beta, N, 
+        adj_indices, adj_indptr, adj_weights, 
+        max_nb_iter_MCMC2
+    )
+    
     print(f"Final magnetization: {magnetization:.4f}")
-    return config, magnetization
+    return final_config, magnetization
 
 @njit
-def _mcmc_numba_core(beta, N, adj_indices, adj_indptr, adj_weights, adj_abs_weights, M_init, max_iter):
-    config = np.zeros(N, dtype=np.int8)
-    num_stars = N
+def _mcmc2_numba_core(beta, N, adj_indices, adj_indptr, adj_weights, adj_abs_weights, max_iter, init_flag):
+    config = np.empty(N, dtype=np.int8)
     
+    # 1. Initialize Configuration based on flag
+    if init_flag == 0:
+        # FULL STAR: All nodes start as 0
+        for i in range(N):
+            config[i] = 0
+        num_stars = N
+    else:
+        # SINGLE STAR: One node is 0, rest are random +/- 1
+        for i in range(N):
+            config[i] = 1 if np.random.rand() < 0.5 else -1
+        star_node = np.random.randint(0, N)
+        config[star_node] = 0
+        num_stars = 1
+        
     H_bar = np.zeros(N, dtype=np.float64)
-    M = M_init.copy()
+    M = np.zeros(N, dtype=np.float64)
     
+    # 2. Universal Field Initialization (handles ANY starting config)
+    for v in range(N):
+        state_v = config[v]
+        start_idx = adj_indptr[v]
+        end_idx = adj_indptr[v + 1]
+        
+        for i in range(start_idx, end_idx):
+            u = adj_indices[i]
+            w = adj_weights[i]
+            aw = adj_abs_weights[i]
+            
+            # Inject v's state into its neighbor u
+            if state_v != 0:
+                H_bar[u] += w * state_v
+            else:
+                M[u] += aw
+
     nb_star_state = np.zeros(max_iter + 1, dtype=np.int32)
     nb_star_state[0] = num_stars
     
+    # 3. Main MCMC Loop
     for timestep in range(max_iter):
-        # Numba is extremely fast at scalar random generation
         v = np.random.randint(0, N)
         s = 1 if np.random.rand() < 0.5 else -1
         r = np.random.rand()
@@ -300,13 +463,13 @@ def _mcmc_numba_core(beta, N, adj_indices, adj_indptr, adj_weights, adj_abs_weig
             h_bar = H_bar[v]
             m = M[v]
 
-            h_minus = h_bar + s * m
-            h_plus = h_bar - s * m
+            h_plus = h_bar + s * m
+            h_minus = h_bar - s * m
 
             # Evaluate Transition
-            if r < F_beta_Glauber(beta, -2 * s * h_plus):
+            if r < F_beta_Glauber(beta, -2 * s * h_minus):
                 new_state = s
-            elif r > F_beta_Glauber(beta, -2 * s * h_minus) and current_state == -s:
+            elif r > F_beta_Glauber(beta, -2 * s * h_plus) and current_state == -s:
                 new_state = -s
             else:
                 new_state = 0
@@ -320,7 +483,7 @@ def _mcmc_numba_core(beta, N, adj_indices, adj_indptr, adj_weights, adj_abs_weig
                 elif new_state == 0:
                     num_stars += 1
 
-                # Loop through neighbors using the CSR-style index pointers
+                # Loop through neighbors
                 start_idx = adj_indptr[v]
                 end_idx = adj_indptr[v + 1]
                 
@@ -345,17 +508,145 @@ def _mcmc_numba_core(beta, N, adj_indices, adj_indptr, adj_weights, adj_abs_weig
 
         # Coalescence check
         if num_stars == 0:
-            # Slicing creates a new array up to the current timestep
-            return nb_star_state[:timestep + 2], timestep
+            return nb_star_state[:timestep + 2], float(timestep)
 
     return nb_star_state, np.nan
 
-def MCMC2_BC_fwd(beta, G, couplings, max_nb_iter_MCMC2_BC=max_nb_iter_MCMC2_BC):
+def MCMC2_BC_fwd(beta, G, couplings, max_nb_iter_MCMC2_BC=max_nb_iter_MCMC2_BC, init_mode="full_star"):
+    """
+    init_mode options:
+      "full_star"   : All nodes initialize to the star state (0)
+      "single_star" : One node randomizes to star state, the rest randomize to +/- 1
+    """
+    
+    # Translate string mode to integer flag for Numba
+    if init_mode == "full_star":
+        init_flag = 0
+    elif init_mode == "single_star":
+        init_flag = 1
+    else:
+        raise ValueError("init_mode must be either 'full_star' or 'single_star'")
+        
     N = G.number_of_nodes()
     
-    # NEW: Map tuple nodes from grid_graph to integer indices 0...N-1
-    # nx.to_numpy_array(G) naturally uses list(G.nodes()) for its ordering, 
-    # so we must match this exact sequence to keep couplings aligned.
+    node_list = list(G.nodes())
+    node_to_idx = {node: idx for idx, node in enumerate(node_list)}
+    
+    # Count total edges
+    edges_count = sum(1 for v in node_list for _ in G.neighbors(v))
+    
+    # Allocate CSR-style flat arrays
+    adj_indices = np.zeros(edges_count, dtype=np.int32)
+    adj_weights = np.zeros(edges_count, dtype=np.float64)
+    adj_abs_weights = np.zeros(edges_count, dtype=np.float64)
+    adj_indptr = np.zeros(N + 1, dtype=np.int32)
+    
+    # Populate arrays using the mapping
+    ptr = 0
+    for i, v_node in enumerate(node_list):
+        adj_indptr[i] = ptr
+        for u_node in G.neighbors(v_node):
+            j = node_to_idx[u_node]
+            
+            w = couplings[j, i]
+            aw = np.abs(w)
+            
+            adj_indices[ptr] = j
+            adj_weights[ptr] = w
+            adj_abs_weights[ptr] = aw
+            ptr += 1
+            
+    adj_indptr[N] = ptr 
+    
+    # Pass everything to the core
+    nb_star_state, final_step = _mcmc2_numba_core(
+        beta, N, 
+        adj_indices, adj_indptr, adj_weights, adj_abs_weights, 
+        max_nb_iter_MCMC2_BC, init_flag
+    )
+    
+    if not np.isnan(final_step):
+        print(f"Coalescence achieved at iteration {int(final_step)} using {init_mode} initialization.")
+    else:
+        print(f"Warning: Coalescence not achieved after {max_nb_iter_MCMC2_BC} iterations.")
+        
+    return list(nb_star_state), final_step
+
+@njit
+def _multiple_mcmc2_coalescence_core(beta, N, num_configs, adj_indices, adj_indptr, adj_weights, max_iter):
+    """
+    Numba-compiled core to efficiently run MCMC on `num_configs` configurations 
+    simultaneously using the exact same random variables (v, s, r) at each step.
+    """
+    # 1. Initialize `num_configs` random configurations (+1 or -1)
+    configs = np.empty((num_configs, N), dtype=np.int8)
+    for k in range(num_configs):
+        for i in range(N):
+            configs[k, i] = 1 if np.random.rand() < 0.5 else -1
+            
+    # 2. Pre-calculate the initial local field (H) for all nodes in all configurations
+    H = np.zeros((num_configs, N), dtype=np.float64)
+    for k in range(num_configs):
+        for v in range(N):
+            state_v = configs[k, v]
+            start_idx = adj_indptr[v]
+            end_idx = adj_indptr[v + 1]
+            for i in range(start_idx, end_idx):
+                u = adj_indices[i]
+                w = adj_weights[i]
+                H[k, u] += w * state_v
+
+    # 3. Main MCMC Loop
+    for t in range(1, max_iter + 1):
+        # Draw ONE set of common random variables for this MCMC step
+        v = np.random.randint(0, N)
+        s = 1 if np.random.rand() < 0.5 else -1
+        r = np.random.rand()
+        
+        # Apply the proposed transition to ALL 100 configurations
+        for k in range(num_configs):
+            current_state = configs[k, v]
+            
+            if current_state != s:
+                h = H[k, v]
+                
+                # Evaluate Glauber transition
+                if r < F_beta_Glauber(beta, 2 * current_state * h):
+                    configs[k, v] = s  # Flip state
+                    
+                    # Dynamic Update: If node v flips, update H for all its neighbors
+                    start_idx = adj_indptr[v]
+                    end_idx = adj_indptr[v + 1]
+                    for i in range(start_idx, end_idx):
+                        u = adj_indices[i]
+                        w = adj_weights[i]
+                        H[k, u] += 2 * w * s
+        
+        # 4. Check for coalescence (all configurations identical)
+        # To avoid performance bottleneck, we only check for coalescence every N steps
+        if t % N == 0:
+            coalesced = True
+            for k in range(1, num_configs):
+                for i in range(N):
+                    if configs[k, i] != configs[0, i]:
+                        coalesced = False
+                        break
+                if not coalesced:
+                    break
+            
+            if coalesced:
+                return t
+                
+    # If it reaches here, it hit max_iter without coalescing
+    return -1
+
+def simulate_n_configs(beta, G, couplings, num_configs=100, max_iter=max_nb_iter_MCMC2_BC):
+    """
+    Prepares the graph in CSR format and launches the Numba MCMC loop.
+    """
+    N = G.number_of_nodes()
+    
+    # Map nodes to integer indices 0...N-1 to align with Numba's arrays
     node_list = list(G.nodes())
     node_to_idx = {node: idx for idx, node in enumerate(node_list)}
     
@@ -365,50 +656,40 @@ def MCMC2_BC_fwd(beta, G, couplings, max_nb_iter_MCMC2_BC=max_nb_iter_MCMC2_BC):
     # 2. Allocate CSR-style flat arrays
     adj_indices = np.zeros(edges_count, dtype=np.int32)
     adj_weights = np.zeros(edges_count, dtype=np.float64)
-    adj_abs_weights = np.zeros(edges_count, dtype=np.float64)
     adj_indptr = np.zeros(N + 1, dtype=np.int32)
-    M_init = np.zeros(N, dtype=np.float64)
     
-    # 3. Populate arrays using the mapping
+    # 3. Populate arrays
     ptr = 0
     for i, v_node in enumerate(node_list):
         adj_indptr[i] = ptr
         for u_node in G.neighbors(v_node):
-            j = node_to_idx[u_node] # Get integer index of the neighbor
-            
-            # Access couplings using the integer indices
+            j = node_to_idx[u_node]
             w = couplings[j, i]
-            aw = np.abs(w)
             
             adj_indices[ptr] = j
             adj_weights[ptr] = w
-            adj_abs_weights[ptr] = aw
             ptr += 1
             
-            M_init[i] += np.abs(couplings[i, j])
-            
-    adj_indptr[N] = ptr # Cap off the pointer array
+    adj_indptr[N] = ptr 
     
-    # 4. Pass compiled structures to the high-speed core
-    result_states, final_step = _mcmc_numba_core(
-        beta, N, 
-        adj_indices, adj_indptr, adj_weights, adj_abs_weights, 
-        M_init, max_nb_iter_MCMC2_BC
+    # 4. Pass to the Numba core
+    print(f"Starting parallel MCMC for {num_configs} configurations...")
+    coal_time = _multiple_mcmc_coalescence_core(
+        beta, N, num_configs, 
+        adj_indices, adj_indptr, adj_weights, 
+        max_iter
     )
-    
-    if final_step < max_nb_iter_MCMC2_BC:
-        print(f"Coalescence achieved at iteration {final_step}")
+    if coal_time > 0:
+        print(f"-> SUCCESS: All {num_configs} configurations coalesced at time step {coal_time}!")
     else:
-        print("Warning: Coalescence not achieved after max iterations.")
+        print(f"-> WARNING: Failed to coalesce within {max_iter} steps.")
         
-    return list(result_states), final_step
+    return coal_time
 
-def Nb_star(N, beta, G, couplings, beta_c, max_beta, save_name, n_runs=25, save_path=save_path, **kwargs):
+def Nb_star(N, beta, G, couplings, beta_c, save_name, n_runs=25, init_mode="full_star", save_path=save_path, **kwargs):
     """
     Runs the bounding chain algorithm forward in time and saves the data to a CSV.
     """
-    # Create the beta array. We ensure we capture points around 0 to max_beta.
-    # You can adjust the density of the linspace as needed.
     d = kwargs.get('d', None)  # Extract dimension if provided, default to None
     all_data = []
     # for beta in betas:
@@ -418,10 +699,16 @@ def Nb_star(N, beta, G, couplings, beta_c, max_beta, save_name, n_runs=25, save_
     
     # Run multiple simulations for the current beta
     for _ in range(n_runs):
-        nb_star_states, __ = MCMC2_BC_fwd(beta, G, couplings)
-        temp_time.append(len(nb_star_states))
-        temp_state.append(nb_star_states)
-        
+        nb_star_states, __ = MCMC2_BC_fwd(beta, G, couplings, init_mode=init_mode)
+        if init_mode == "full_star":
+            # DOWN-SAMPLE: Keep only 10% of the trajectory (every 10th step)
+            nb_star_states = nb_star_states[::10]
+            temp_time.append(len(nb_star_states))
+            temp_state.append(nb_star_states)
+        elif init_mode == "single_star":
+            # DOWN-SAMPLE: Keep only the last element of the trajectory (final number of star states before coalescence)
+            temp_time.append(1)  # Only one time point for single_star mode
+            temp_state.append([nb_star_states[-1]])  # Wrap in list for consistent shape
     max_time = max(temp_time)
     
     # Pad the states so they all match the max_time length
@@ -429,7 +716,7 @@ def Nb_star(N, beta, G, couplings, beta_c, max_beta, save_name, n_runs=25, save_
         if len(temp_state[i]) < max_time:
             temp_state[i] += [temp_state[i][-1]] * (max_time - len(temp_state[i]))
             
-    time = np.arange(max_time)
+    time = np.arange(max_time)*10
     mean_state = np.nanmean(temp_state, axis=0)
     std_state = np.nanstd(temp_state, axis=0)
     
@@ -453,8 +740,13 @@ def Nb_star(N, beta, G, couplings, beta_c, max_beta, save_name, n_runs=25, save_
             save_path+="/ferr/"
         elif "sg" in save_name:
             save_path+="/sg/"
+    elif "temp" in save_name:
+        save_path+="temp_data/"
 
-    csv_path = save_path+f"{save_name}_nb_star.csv"
+    if init_mode == "full_star":
+        csv_path = save_path+f"{save_name}_nb_star.csv"
+    elif init_mode == "single_star":
+        csv_path = save_path+f"{save_name}_nb_star_single.csv"
     try:
         df_existing = pd.read_csv(csv_path)
         df_new = pd.DataFrame(all_data)
@@ -466,7 +758,7 @@ def Nb_star(N, beta, G, couplings, beta_c, max_beta, save_name, n_runs=25, save_
         df.to_csv(csv_path, index=False)
         print(f"Data successfully saved to {csv_path}")
 
-def Plot_nb_star(save_name, beta_BD, beta_c, max_beta, df=None, save_path=save_path, **kwargs):
+def Plot_nb_star(save_name, beta_BD, beta_c, max_beta, init_mode="full_star", df=None, save_path=save_path, **kwargs):
     """
     Reads the generated data points and creates the convergence plot.
     """
@@ -478,7 +770,7 @@ def Plot_nb_star(save_name, beta_BD, beta_c, max_beta, df=None, save_path=save_p
     elif save_name == "ER" or save_name == "RR":
         access_path = save_path+"data/algo/random/"+f"{save_name}_nb_star"
         save_path+="figures/algo/random/"
-    elif "RL" in save_name:
+    elif "RL" in save_name and not "temp" in save_name:
         access_path = save_path+f"data/algo/latt/d{d}/"
         if "ferr" in save_name:
             access_path+="ferr/"+f"{save_name}_nb_star"
@@ -488,65 +780,88 @@ def Plot_nb_star(save_name, beta_BD, beta_c, max_beta, df=None, save_path=save_p
             save_path+=f"figures/algo/latt/d{d}/sg/"
 
     if df is None:
-        df = pd.read_csv(f"{access_path}.csv")
-        
+        if init_mode == "full_star":
+            df = pd.read_csv(f"{access_path}.csv")
+        elif init_mode == "single_star":
+            df = pd.read_csv(f"{access_path}_single.csv")
+    
     fig, ax = plt.subplots()
     norm = mpl.colors.Normalize(vmin=0, vmax=max_beta)
     
     betas = df['beta'].unique()
     beta_no_zero = None
-    
-    # Plot data for each beta
-    for beta in betas:
-        beta_data = df[df['beta'] == beta]
-        time = beta_data['time'].values
-        mean_state = beta_data['mean_state'].values
-        std_state = beta_data['std_state'].values
-        
-        # Check if this is the lowest beta where the mean star states never reach 0
-        if beta_no_zero is None and np.min(mean_state) > 0:
-            beta_no_zero = beta
+    if init_mode == "full_star":
+        # Plot data for each beta
+        for beta in betas:
+            beta_data = df[df['beta'] == beta]
+            time = beta_data['time'].values
+            mean_state = beta_data['mean_state'].values
+            std_state = beta_data['std_state'].values
             
-        color = cmc.berlin(norm(beta))
-        cmap = cmc.berlin
+            # Check if this is the lowest beta where the mean star states never reach 0
+            if beta_no_zero is None and np.min(mean_state) > 0:
+                beta_no_zero = beta
+                
+            color = cmc.berlin(norm(beta))
+            cmap = cmc.berlin
 
-        ax.plot(time, mean_state, color=color)
-        ax.fill_between(time, 
-                        np.maximum(0, mean_state - std_state), 
-                        mean_state + std_state, 
-                        color=color, alpha=0.3, edgecolor=None)
+            ax.plot(time, mean_state, color=color)
+            if init_mode == "full_star":
+                ax.fill_between(time, 
+                            np.maximum(0, mean_state - std_state), 
+                            mean_state + std_state, 
+                            color=color, alpha=0.3, edgecolor=None)
 
-    ax.set_xscale('log')
-    ax.set_xlabel('Time')
-    ax.set_ylabel(r'Number of $\star$ States')
+        ax.set_xscale('log')
+        ax.set_xlabel('Time')
+        ax.set_ylabel(r'Number of $\star$ States')
 
-    # --- Colorbar implementation ---
-    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
+        # --- Colorbar implementation ---
+        sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
 
-    # Define standard ticks including Bubley-Dyer and Phase Transition betas
-    ticks = [0, beta_BD, max_beta]
-    tick_labels = [r'$\beta=0$', r'$\beta_{BD}$', f'{max_beta:.2f}']
+        # Define standard ticks including Bubley-Dyer and Phase Transition betas
+        ticks = [0, beta_BD, max_beta]
+        tick_labels = [r'$\beta=0$', r'$\beta_{BD}$', f'{max_beta:.2f}']
 
-    # Add the tracked lowest beta to the ticks if it was found
-    if beta_no_zero is not None and beta_no_zero not in ticks:
-        ticks.append(beta_no_zero)
-        tick_labels.append(f'{beta_no_zero:.2f}*')
+        # Add the tracked lowest beta to the ticks if it was found
+        if beta_no_zero is not None and beta_no_zero not in ticks:
+            ticks.append(beta_no_zero)
+            tick_labels.append(f'{beta_no_zero:.2f}*')
 
-    # Sort ticks and labels so they appear in correct ascending order on the colorbar axis
-    sorted_pairs = sorted(zip(ticks, tick_labels))
-    sorted_ticks = [p[0] for p in sorted_pairs]
-    sorted_labels = [p[1] for p in sorted_pairs]
+        # Sort ticks and labels so they appear in correct ascending order on the colorbar axis
+        sorted_pairs = sorted(zip(ticks, tick_labels))
+        sorted_ticks = [p[0] for p in sorted_pairs]
+        sorted_labels = [p[1] for p in sorted_pairs]
 
-    cbar = fig.colorbar(sm, ax=ax)
-    cbar.set_ticks(sorted_ticks)
-    cbar.set_ticklabels(sorted_labels)
+        cbar = fig.colorbar(sm, ax=ax)
+        cbar.set_ticks(sorted_ticks)
+        cbar.set_ticklabels(sorted_labels)
+    elif init_mode == "single_star":
+        # plot the errorbar of the mean number of star states at the final time point for each beta
+        #NOTE: in single_star mode, we only have one time point (the final one), so we can directly plot mean_state vs beta with error bars
+        final_time_data = df[df['time'] == df['time'].max()]
+        ax.plot(final_time_data['beta'], final_time_data['mean_state'])
+        ax.set_xlabel(r'$\beta$')
+        ax.set_ylabel(r'Final Mean Number of $\star$ States')
+        beta_sg = kwargs.get('beta_sg', None)
+        beta_dm = kwargs.get('beta_dm', None)
+        beta_uni = kwargs.get('beta_uni', None)
+        if beta_sg is not None:
+            ax.axvline(beta_sg, color='red', linestyle='--', label=r'$\beta_{SG}$')
+        if beta_dm is not None:
+            ax.axvline(beta_dm, color='green', linestyle=':', label=r'$\beta_{DM}$')
+        if beta_uni is not None:
+            ax.axvline(beta_uni, color='blue', linestyle='-.', label=r'$\beta_{uni}$')
+        ax.legend()
     
     # Save outputs
-    plt.savefig(save_path+f"{save_name}_nb_star.png", dpi=300)
-    plt.savefig(save_path+f"{save_name}_nb_star.svg")
+    if init_mode == "full_star":
+        plt.savefig(save_path+f"{save_name}_nb_star.png", dpi=300)
+    elif init_mode == "single_star":
+        plt.savefig(save_path+f"{save_name}_nb_star_single.png", dpi=300)
 
-def Coal_time(N_list, beta, d, beta_c, max_beta, save_name, n_runs=25, save_path=save_path):
+def Coal_time(N_list, beta, d, max_beta, save_name, n_runs=25, save_path=save_path):
     """
     Runs the coalescence time analysis for the Curie-Weiss model and saves data to a CSV.
     """
@@ -578,14 +893,14 @@ def Coal_time(N_list, beta, d, beta_c, max_beta, save_name, n_runs=25, save_path
             if d == 3:
                 L = int(round(N**(1/3)))
                 dim = (L, L, L)
-            G = nx.grid_graph(dim)
+            G = nx.grid_graph(dim, periodic=True)
             actual_N = G.number_of_nodes()
             if save_name == "RL_ferr":
                 couplings = np.ones((actual_N, actual_N)) - np.eye(actual_N)
             elif save_name == "RL_sg":
-                couplings = np.random.choice([-1, 1], size=(actual_N, actual_N)) * nx.to_numpy_array(G)
-                couplings = (couplings + couplings.T) / 2  # Ensure symmetry J_ij = J_ji
-                np.fill_diagonal(couplings, 0)
+                couplings = np.triu(np.random.choice([-1, 1], size=(N, N)), k=1)
+                couplings += couplings.T
+                couplings = couplings * nx.to_numpy_array(G)
 
         print(f"  Processing beta={beta:.2f}...")
         coal_time_temp = []
@@ -630,7 +945,7 @@ def Coal_time(N_list, beta, d, beta_c, max_beta, save_name, n_runs=25, save_path
         df.to_csv(csv_path, index=False)
         print(f"Data successfully saved to {csv_path}")
 
-def Plot_coal_time(save_name, beta_BD, beta_c, max_beta, df=None, save_path=save_path, max_nb_iter_MCMC2_BC=max_nb_iter_MCMC2_BC, **kwargs):
+def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, df=None, save_path=save_path, max_nb_iter_MCMC2_BC=max_nb_iter_MCMC2_BC, **kwargs):
     """
     Reads the generated data points and creates the 4 coalescence time plots.
     """
@@ -671,10 +986,23 @@ def Plot_coal_time(save_name, beta_BD, beta_c, max_beta, df=None, save_path=save
                extent=[betas[0], betas[-1], min(N_list), max(N_list)], 
                cmap=plt.cm.viridis, norm=LogNorm())
     plt.vlines(beta_c, min(N_list), max(N_list), color='k', linestyle='--', label=r'$\beta_c$')
-    plt.vlines(beta_BD, min(N_list), max(N_list), color='k', linestyle=':', label=r'$\beta_{BD}$')
+    if beta_uni != beta_c:
+        plt.vlines(beta_uni, min(N_list), max(N_list), color='b', linestyle='-.', label=r'$\beta_{uni}$')
+    if save_name != "SK" and save_name != "ER" and save_name != "CW":
+        plt.vlines(beta_BD, min(N_list), max(N_list), color='r', linestyle=':', label=r'$\beta_{BD/Dob}$')
+    if save_name == "ER":
+        deg_max = [np.floor(max_deg_ER_graph(N, d)) for N in N_list]
+        beta_BD = [np.arctanh(1/deg) for deg in deg_max]
+        plt.axvspan(np.min(beta_BD), np.max(beta_BD), color='lightgray', alpha=0.5, label=r'$\beta_{BD/Dob}$ region')
+    if save_name == "SK":
+        #plot the 1/sqrt(N) expected scaling for the SK model
+        beta_BD_SK = 1 / np.sqrt(N_list)
+        plt.plot(beta_BD_SK, N_list, color='k', linestyle=':', label=r'$\beta_{BD} \sim 1/\sqrt{N}$')
     plt.colorbar(label='Coalescence Time')
     plt.xlabel(r'Inverse Temperature $\beta$')
     plt.ylabel('System Size $N$')
+    plt.legend()
+    plt.title(fr'Coalescence Time vs $N$ and $\beta$ for {save_name}'+f' ($d=${d})' if d is not None else fr'Coalescence Time vs $N$ and $\beta$ for {save_name}', fontsize=20)
     plt.savefig(save_path+f'{save_name}_heatmap.png')
     plt.savefig(save_path+f'{save_name}_heatmap.svg')
     plt.close()
@@ -719,7 +1047,7 @@ def Plot_coal_time(save_name, beta_BD, beta_c, max_beta, df=None, save_path=save
     norm = mpl.colors.Normalize(vmin=0, vmax=max_beta)
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmc.berlin)
     sm.set_array([])
-    ticks = [0, beta_BD, beta_c, max_beta]
+    ticks = [0, np.max(beta_BD), beta_c, max_beta]
     tick_labels = ['0', r'$\beta_{BD}$', r'$\beta_c$', f'{max_beta:.2f}']
 
     if beta_no_zero is not None and beta_no_zero not in ticks:
@@ -780,7 +1108,7 @@ def Plot_coal_time(save_name, beta_BD, beta_c, max_beta, df=None, save_path=save
     norm = mpl.colors.Normalize(vmin=0, vmax=max_beta)
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmc.berlin)
     sm.set_array([])
-    ticks = [0, beta_BD, beta_c, max_beta]
+    ticks = [0, np.max(beta_BD), beta_c, max_beta]
     tick_labels = ['0', r'$\beta_{BD}$', r'$\beta_c$', f'{max_beta:.2f}']
     if beta_no_zero is not None and beta_no_zero not in ticks:
         ticks.append(beta_no_zero)
@@ -834,23 +1162,32 @@ def Physics(model, N_list, beta, save_name, n_runs=25, save_path=save_path, **kw
             if d == 3:
                 L = int(round(N**(1/3)))
                 dim = (L, L, L)
-            G = nx.grid_graph(dim)
+            G = nx.grid_graph(dim, periodic=True)
             actual_N = G.number_of_nodes()
             if "ferr" in model:
                 couplings = np.ones((actual_N, actual_N)) - np.eye(actual_N)
             elif "sg" in model:
-                couplings = np.random.choice([-1, 1], size=(actual_N, actual_N)) * nx.to_numpy_array(G)
-                couplings = (couplings + couplings.T) / 2
-                np.fill_diagonal(couplings, 0)
+                couplings = np.triu(np.random.choice([-1, 1], size=(N, N)), k=1)
+                couplings += couplings.T
+                couplings = couplings * nx.to_numpy_array(G)
         else:
             raise ValueError("Invalid model. Choose 'CW', 'RL', 'ER', 'RR', or 'SK'.")
 
         temp_metrics = {'mag': [], 'energy': [], 'q': []}
-        
+        previous_config = None # Track the last replica
         for _ in range(n_runs):
             if model == 'CW' or model == 'RL_ferr':
                 config, time, _ = CFTP_MCMC2_BC(beta=beta, G=G, couplings=couplings)
                 temp_metrics['mag'].append(np.abs(np.nanmean(config)))
+                if model == 'RL_ferr' and d==2:
+                    node_list = list(G.nodes())
+                    node_to_idx = {node: idx for idx, node in enumerate(node_list)}
+                    energy = 0
+                    for u_node, v_node in G.edges():
+                        i = node_to_idx[u_node]
+                        j = node_to_idx[v_node]
+                        energy -= couplings[i, j] * config[i] * config[j]
+                    temp_metrics['energy'].append(energy / N)
             else:
                 config, time, _ = CFTP_MCMC2_BC(beta=beta, G=G, couplings=couplings)
                 node_list = list(G.nodes())
@@ -861,7 +1198,12 @@ def Physics(model, N_list, beta, save_name, n_runs=25, save_path=save_path, **kw
                     j = node_to_idx[v_node]
                     energy -= couplings[i, j] * config[i] * config[j]
                 temp_metrics['energy'].append(energy / N)
-                temp_metrics['q'].append(np.mean(config)**2)
+                # Calculate replica overlap if we have a previous configuration
+                if previous_config is not None:
+                    q_val = np.mean(config * previous_config)
+                    temp_metrics['q'].append(q_val)
+                    
+                previous_config = config.copy()
                 
         all_data.append({
             'model': model,
@@ -869,8 +1211,8 @@ def Physics(model, N_list, beta, save_name, n_runs=25, save_path=save_path, **kw
             'beta': beta,
             'mag_mean': np.nanmean(temp_metrics['mag']) if model == 'CW' or model=="RL_ferr" else np.nan,
             'mag_var': np.nanvar(temp_metrics['mag']) if model == 'CW' or model=="RL_ferr" else np.nan,
-            'energy_mean': np.nanmean(temp_metrics['energy']) if model in ['ER', 'RR', 'SK', 'RL_sg'] else np.nan,
-            'energy_var': np.nanvar(temp_metrics['energy']) if model in ['ER', 'RR', 'SK', 'RL_sg'] else np.nan,
+            'energy_mean': np.nanmean(temp_metrics['energy']) if model in ['ER', 'RR', 'SK', 'RL_sg'] or model=="RL_ferr" and d==2 else np.nan,
+            'energy_var': np.nanvar(temp_metrics['energy']) if model in ['ER', 'RR', 'SK', 'RL_sg'] or model=="RL_ferr" and d==2 else np.nan,
             'q_mean': np.nanmean(temp_metrics['q']) if model in ['ER', 'RR', 'SK', 'RL_sg'] else np.nan,
             'q_var': np.nanvar(temp_metrics['q']) if model in ['ER', 'RR', 'SK', 'RL_sg'] else np.nan,
         })
@@ -927,7 +1269,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
     
     if model == 'CW':
         fig, axes = plt.subplots(nrows=len(N_list), ncols=1, sharex=True, figsize=(8, 8))
-        beta_theo = np.linspace(0, 1.3, 100)
+        beta_theo = np.linspace(0, 1.5, 100)
         
         for i, N in enumerate(N_list):
             ax = axes[i] if len(N_list) > 1 else axes
@@ -962,6 +1304,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
         else:
             beta_SG = np.arctanh(np.sqrt(1/(d-1)))
             beta_BD = np.arctanh(1/d)
+            beta_obs = np.arctanh(1/(d-1))
         betas_theo = np.linspace(0, beta_SG*1.1, 100)
         theo_energy = np.array([-d/2 * np.tanh(b) for b in betas_theo])
         
@@ -974,9 +1317,11 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
             plt.errorbar(sub_df['beta'], sub_df['energy_mean'], yerr=np.sqrt(sub_df['energy_var']), 
                          marker=marker_lst[i % len(marker_lst)], color=color_lst[i % len(color_lst)], 
                          label=f'N={N}', linestyle='None')  
-            if model == 'ER':
-                plt.axvspan(np.min(beta_BD), np.max(beta_BD), color='lightgray', alpha=0.5, label=r'$\beta_{BD}$ region' if i == 0 else None)
-        plt.vlines(beta_obs if model=="ER" else beta_BD, np.min(theo_energy)*1.2, 0.1, color='k', linestyle=':', label=r'$\tanh^{-1}(1/d)$' if model=="ER" else r'$\beta_{BD}$')
+        if model == 'ER':
+            plt.axvspan(np.min(beta_BD), np.max(beta_BD), color='lightgray', alpha=0.5, label=r'$\beta_{BD}$ region')
+        else:
+            plt.vlines(beta_BD, np.min(theo_energy)*1.2, 0.1, color='b', linestyle=':', label=r'$\beta_{BD}$')
+        plt.vlines(beta_obs, np.min(theo_energy)*1.2, 0.1, color='g', linestyle='-.', label=r'$\tanh^{-1}\left(\frac{1}{d}\right)$' if model == 'ER' else r'$\tanh^{-1}\left(\frac{1}{d-1}\right)$')
         plt.vlines(beta_SG, np.min(theo_energy)*1.2, 0.1, color='k', linestyle='--', label=r'$\beta_{SG}$')
         plt.ylim(np.min(theo_energy)*1.1, 0.05)
         plt.xlabel(r'Inverse Temperature $\beta$')
@@ -987,7 +1332,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
         
     elif model == 'SK':
         beta_SG = 1
-        betas_theo = np.linspace(0, 1.1, 100)
+        betas_theo = np.linspace(0, 0.5, 100)
         theo_energy = np.array([-b/2 for b in betas_theo])
         theo_q = np.zeros_like(betas_theo)
         
@@ -1008,7 +1353,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
             ax2.errorbar(sub_df['beta'], sub_df['q_mean'], yerr=np.sqrt(sub_df['q_var']), 
                          marker=marker_lst[i % len(marker_lst)], color=color_lst[i % len(color_lst)], label=f'N={N}', linestyle='None')
                          
-        ax1.vlines(beta_SG, np.min(theo_energy)*1.2, 0.1, color='g', linestyle=':', label=r'$\beta_{SG}$')
+        # ax1.vlines(beta_SG, np.min(theo_energy)*1.2, 0.1, color='g', linestyle=':', label=r'$\beta_{SG}$')
         ax1.set_ylim(np.min(theo_energy)*1.1, 0.05)
         ax1.set_xlabel(r'Inverse Temperature $\beta$')
         ax1.set_ylabel('Energy per Spin')
@@ -1016,7 +1361,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
         fig1.savefig(save_path+f"{save_name}_energy.png")
         fig1.savefig(save_path+f"{save_name}_energy.svg")
         
-        ax2.vlines(beta_SG, -0.1, 0.1, color='g', linestyle=':', label=r'$\beta_{SG}$')
+        # ax2.vlines(beta_SG, -0.1, 0.1, color='g', linestyle=':', label=r'$\beta_{SG}$')
         ax2.set_xlabel(r'Inverse Temperature $\beta$')
         ax2.set_ylabel(r'$q_{EA}$')
         ax2.legend()
@@ -1025,6 +1370,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
 
     elif "RL" in model:
         if "ferr" in model:
+            # plot the magnetization in all cases of d
             fig, axes = plt.subplots(nrows=len(N_list), ncols=1, sharex=True, figsize=(8, 8))
             beta_theo = np.linspace(0, 1.0, 100)
             
@@ -1040,7 +1386,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
                 if d == 2:
                     beta_c = 1/2 * np.log(1 + np.sqrt(2))
                 elif d == 3:
-                    beta_c = 0.2216544
+                    beta_c = 0.221654626
                 ax.vlines(beta_c, -0.05, 1.05, color='k', linestyle='--', label=r'$\beta_c$' if i == 0 else None)
                 if i < len(N_list)-1: 
                     ax.axhline(0, color='k', linestyle='-', linewidth=1)
@@ -1054,19 +1400,39 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
             plt.subplots_adjust(left=0.15, right=0.95, top=0.95, bottom=0.1, hspace=0)
             plt.savefig(save_path+f"{save_name}_magnetization.png")
             plt.savefig(save_path+f"{save_name}_magnetization.svg")
-        elif "sg" in model:
-            d = kwargs.get('d', 4)
+
+            # plot the energy per site in the case of d=2
+            if d==2:
+                theo_energy = np.array([theo_energy_per_site_ising_2d(beta) for beta in beta_theo])
+                plt.figure()
+                plt.plot(beta_theo[beta_theo<=beta_c], theo_energy[beta_theo<=beta_c], '-r', label='Theory')
+                plt.plot(beta_theo[beta_theo>beta_c], theo_energy[beta_theo>beta_c], '--r')
+                for i, N in enumerate(N_list):
+                    sub_df = df[df['N'] == N]
+                    plt.errorbar(sub_df['beta'], sub_df['energy_mean'], yerr=np.sqrt(sub_df['energy_var']), 
+                                marker=marker_lst[i % len(marker_lst)], color=color_lst[i % len(color_lst)], 
+                                label=f'N={N}', linestyle='None')  
+                    
+                plt.vlines(beta_c, np.min(theo_energy)*1.2, 0.05, color='k', linestyle='--', label=r'$\beta_c$')
+                # plt.ylim(np.min(theo_energy)*1.1, 0.05)
+                plt.xlabel(r'Inverse Temperature $\beta$')
+                plt.ylabel('Energy per Spin')
+                plt.legend()
+                plt.savefig(save_path+f"{save_name}_energy.png")
+                plt.savefig(save_path+f"{save_name}_energy.svg")
+
+        elif "sg" in model: 
             if d == 2:
-                beta_SG = 0
+                beta_SG = 0  # No spin glass phase in 2D
                 beta_c = 1/2 * np.log(1 + np.sqrt(2))
-            elif d == 3:
-                beta_SG = 0.9
-                beta_c = 0.2216544
-            betas_theo = np.linspace(0, beta_SG*1.1, 100)
-            theo_energy = np.array([-d/2 * np.tanh(beta) for beta in betas_theo])
-            
+                betas_theo = np.linspace(0, beta_c*1.1, 100)
+            if d == 3:
+                beta_SG = 0.83
+                beta_c = 0.221654626
+                betas_theo = np.linspace(0, beta_SG*1.1, 100)
             plt.figure()
-            plt.plot(betas_theo[betas_theo < beta_SG], theo_energy[betas_theo < beta_SG], '-r', label='RS Solution')
+            theo_energy = np.array([-d*np.tanh(beta) for beta in betas_theo])  # Approximation from high-temperature expansion
+            plt.plot(betas_theo[betas_theo < beta_SG], theo_energy[betas_theo < beta_SG], '-r', label='Theory')
             plt.plot(betas_theo[betas_theo >= beta_SG], theo_energy[betas_theo >= beta_SG], '--r')
             
             for i, N in enumerate(N_list):
@@ -1081,6 +1447,6 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
             # plt.ylim(np.min(theo_energy)*1.1, 0.05)
             plt.xlabel(r'Inverse Temperature $\beta$')
             plt.ylabel('Energy per Spin')
-            plt.legend(loc=(0.62, 0.46))
+            plt.legend()
             plt.savefig(save_path+f"{save_name}_energy.png")
             plt.savefig(save_path+f"{save_name}_energy.svg")

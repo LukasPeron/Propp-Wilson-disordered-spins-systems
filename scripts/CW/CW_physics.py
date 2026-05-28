@@ -2,7 +2,7 @@
 This script is made to run physics simulation for the Curie-Weiss model with the CFTP BC algorithm at different values of beta and different sizes
 """
 
-from cftp_my_lib import *
+from utils.cftp_func import *
 
 betas = np.linspace(0, 1.5, 15)
 N_list = [100, 200, 500, 750, 1000]

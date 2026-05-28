@@ -4,7 +4,7 @@ This script runs the bounding chain algorithm forward in time to investigate the
 Author: L. Péron
 """
 
-from cftp_bc import *
+from cftp_my_lib import *
 
 N = 500
 d = 4
