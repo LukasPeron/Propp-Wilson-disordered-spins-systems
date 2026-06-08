@@ -30,13 +30,13 @@ for i, model in enumerate(model_list):
     path_to_file = "/home/lperon/cftp_dis_spin/data/algo/"
     d = None
     if model in ["CW", "SK"]:
-        path_to_file += f"complet/{model}_coal_time.csv"
+        path_to_file += f"complet/{model}_coal_time_F_beta_Glauber.csv"
     elif model in ["ER", "RR"]:
-        path_to_file += f"random/{model}_coal_time.csv"
+        path_to_file += f"random/{model}_coal_time_F_beta_Glauber.csv"
     elif model in ["RL_ferr2", "RL_sg2", "RL_ferr3", "RL_sg3"]:
         d = int(model[-1])
         model_base = model.replace(f'{d}', '')
-        path_to_file += f"latt/d{d}/{model_base.replace('RL_', '')}/{model_base}_coal_time.csv"
+        path_to_file += f"latt/d{d}/{model_base.replace('RL_', '')}/{model_base}_coal_time_F_beta_Glauber.csv"
     print(f"Reading: {path_to_file}")
 
     df = pd.read_csv(path_to_file)
@@ -72,25 +72,9 @@ all_N_array = np.array(all_N_data)
 all_y_array = np.array(all_y_data)
 
 # ==========================================
-# PERFORM GLOBAL POWER LAW FIT
-# ==========================================
-print("\n--- Performing Global Power Law Fit on Un-averaged Data ---")
-try:
-    popt_power, pcov_power = curve_fit(power_law_fit, all_N_array, all_y_array, p0=(1, -1, 0), maxfev=10000)
-    a_fit, b_fit, c_fit = popt_power
-    
-    y_fit = power_law_fit(all_N_array, *popt_power)
-    r2 = r2_score(all_y_array, y_fit)
-    
-    print(f"[GLOBAL] Power Law Fit: a={a_fit:.4f}, b={b_fit:.4f}, c={c_fit:.4f} | R^2 = {r2:.4f}")
-except Exception as e:
-    print(f"[GLOBAL] Power law fit failed: {e}")
-    popt_power = None
-
-# ==========================================
 # PLOTTING
 # ==========================================
-fig, ax = plt.subplots(figsize=(10, 7))
+fig, ax = plt.subplots()
 
 # Set up the colormap and normalization based on global beta limits
 cmap = mpl.cm.viridis
@@ -106,13 +90,6 @@ for model in model_list:
     ax.scatter(data['N'], data['y'], c=data['beta'], cmap=cmap, norm=norm, 
                marker=data['marker'], s=40, alpha=0.7, edgecolors='k', linewidth=0.5)
 
-# Plot the global fit line if successful
-if popt_power is not None:
-    N_fit_dense = np.linspace(min(all_N_array), max(all_N_array), 200)
-    power_label = r'Global Fit $aN^b+c$'+f'\n$R^2$={r2:.4f}\n$a=${a_fit:.4f}\n$b=${b_fit:.4f}\n$c=${c_fit:.4f}'
-    ax.plot(N_fit_dense, power_law_fit(N_fit_dense, *popt_power), color='black', 
-            linestyle='-', linewidth=2.5, label=power_label)
-
 # Format axes
 ax.set_xlabel('$N$')
 ax.set_ylabel('$\\log(T_{coal})/N$')
@@ -126,19 +103,22 @@ cbar.set_label(r'$\beta$')
 # (otherwise it will grab random colors from the colormap)
 custom_handles = []
 for model in model_list:
+    if model == "RL_ferr2":
+        label = "F2D"
+    elif model == "RL_sg2":
+        label = "EA2D"
+    elif model == "RL_ferr3":
+        label = "F3D"
+    elif model == "RL_sg3":
+        label = "EA3D"
+    else:
+        label = model
     data = model_data_dict[model]
-    label = f"{model}"
-    if data['d'] is not None:
-        label += f" (d={data['d']})"
     
     h = mlines.Line2D([], [], color='w', marker=data['marker'], 
                       markerfacecolor='gray', markeredgecolor='k', 
                       markersize=8, label=label)
     custom_handles.append(h)
-
-if popt_power is not None:
-    fit_handle = mlines.Line2D([], [], color='black', linestyle='-', linewidth=2.5, label=power_label)
-    custom_handles.append(fit_handle)
 
 ax.set_xscale('log')
 ax.set_yscale('log')

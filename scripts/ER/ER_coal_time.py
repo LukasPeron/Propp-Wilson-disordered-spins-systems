@@ -13,6 +13,6 @@ save_name = "ER"
 betas = np.linspace(0, max_beta, 25, endpoint=True)
 
 for beta in betas:
-    Coal_time(N_list=N_list, beta=beta, d=d, max_beta=max_beta, save_name=save_name, n_runs=10)
+    Coal_time(N_list=N_list, beta=beta, d=d, max_beta=max_beta, save_name=save_name, n_runs=10, sampler=F_beta_Metropolis)
 
-Plot_coal_time(save_name=save_name, beta_BD=np.nan, beta_c=beta_SG, beta_uni=beta_uni, max_beta=max_beta, d=d)
+Plot_coal_time(save_name=save_name, beta_BD=np.nan, beta_c=beta_SG, beta_uni=beta_uni, max_beta=max_beta, sampler=F_beta_Metropolis, d=d)

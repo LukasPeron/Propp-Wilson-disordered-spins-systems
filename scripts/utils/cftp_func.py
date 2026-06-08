@@ -35,12 +35,21 @@ plt.rcParams.update({
     'mathtext.fontset': 'cm',
     'axes.spines.top': False,
     'axes.spines.right': False,
-    # remove the box around the legend
     'legend.frameon': False
 })
 
 save_path = "/home/lperon/cftp_dis_spin/"
 max_nb_iter_MCMC2_BC = 2**22
+
+def power_law_log_fit(x, a, b, c):
+    return a* np.log(np.abs(x-b)) + c
+
+def power_law_fit(x, a, b, c):
+    # Fits a power law to find the exponent b
+    return a * x**b + c
+
+def exponential_fit(x,a,b):
+    return a * np.exp(x*b)
 
 def solve_self_consistent_beta(N, initial_guess=1.0):
     """
@@ -118,6 +127,7 @@ def max_deg_ER_graph(N, d, initial_guess=5.0):
 def F_beta_Glauber(beta, U):
     return 1 / (1 + np.exp(beta * U))
 
+@njit
 def F_beta_Metropolis(beta, U):
     if U <= 0:
         return 1
@@ -154,7 +164,7 @@ def theoretical_mag_lattice(beta, d):
             return 0.0
         else:
             # We can use a simple power law fit for the magnetization near the critical point
-            return (1 - (beta_c_3D / beta)**2)**0.32653 #value of beta reported in Campostrini et al 2002
+            return (1 - (beta_c_3D / beta)**2)**0.32630 #value of beta reported in Ferrenberg 2017
 
 def theo_energy_per_site_ising_2d(beta):
     if beta == 0:
@@ -411,7 +421,7 @@ def MCMC2_fwd(beta, G, couplings, config, max_nb_iter_MCMC2=max_nb_iter_MCMC2_BC
     return final_config, magnetization
 
 @njit
-def _mcmc2_numba_core(beta, N, adj_indices, adj_indptr, adj_weights, adj_abs_weights, max_iter, init_flag):
+def _mcmc2_numba_core(beta, N, adj_indices, adj_indptr, adj_weights, adj_abs_weights, max_iter, init_flag, sampler):
     config = np.empty(N, dtype=np.int8)
     
     # 1. Initialize Configuration based on flag
@@ -465,11 +475,11 @@ def _mcmc2_numba_core(beta, N, adj_indices, adj_indptr, adj_weights, adj_abs_wei
 
             h_plus = h_bar + s * m
             h_minus = h_bar - s * m
-
+    
             # Evaluate Transition
-            if r < F_beta_Glauber(beta, -2 * s * h_minus):
+            if r < sampler(beta, -2 * s * h_minus):
                 new_state = s
-            elif r > F_beta_Glauber(beta, -2 * s * h_plus) and current_state == -s:
+            elif r > sampler(beta, -2 * s * h_plus) and current_state == -s:
                 new_state = -s
             else:
                 new_state = 0
@@ -512,7 +522,7 @@ def _mcmc2_numba_core(beta, N, adj_indices, adj_indptr, adj_weights, adj_abs_wei
 
     return nb_star_state, np.nan
 
-def MCMC2_BC_fwd(beta, G, couplings, max_nb_iter_MCMC2_BC=max_nb_iter_MCMC2_BC, init_mode="full_star"):
+def MCMC2_BC_fwd(beta, G, couplings, sampler=F_beta_Glauber, max_nb_iter_MCMC2_BC=max_nb_iter_MCMC2_BC, init_mode="full_star"):
     """
     init_mode options:
       "full_star"   : All nodes initialize to the star state (0)
@@ -562,7 +572,7 @@ def MCMC2_BC_fwd(beta, G, couplings, max_nb_iter_MCMC2_BC=max_nb_iter_MCMC2_BC, 
     nb_star_state, final_step = _mcmc2_numba_core(
         beta, N, 
         adj_indices, adj_indptr, adj_weights, adj_abs_weights, 
-        max_nb_iter_MCMC2_BC, init_flag
+        max_nb_iter_MCMC2_BC, init_flag, sampler
     )
     
     if not np.isnan(final_step):
@@ -673,16 +683,16 @@ def simulate_n_configs(beta, G, couplings, num_configs=100, max_iter=max_nb_iter
     adj_indptr[N] = ptr 
     
     # 4. Pass to the Numba core
-    print(f"Starting parallel MCMC for {num_configs} configurations...")
-    coal_time = _multiple_mcmc_coalescence_core(
+    # print(f"Starting parallel MCMC for {num_configs} configurations...")
+    coal_time = _multiple_mcmc2_coalescence_core(
         beta, N, num_configs, 
         adj_indices, adj_indptr, adj_weights, 
         max_iter
     )
-    if coal_time > 0:
-        print(f"-> SUCCESS: All {num_configs} configurations coalesced at time step {coal_time}!")
-    else:
-        print(f"-> WARNING: Failed to coalesce within {max_iter} steps.")
+    # if coal_time > 0:
+    #     print(f"-> SUCCESS: All {num_configs} configurations coalesced at time step {coal_time}!")
+    # else:
+    #     print(f"-> WARNING: Failed to coalesce within {max_iter} steps.")
         
     return coal_time
 
@@ -837,6 +847,7 @@ def Plot_nb_star(save_name, beta_BD, beta_c, max_beta, init_mode="full_star", df
         cbar = fig.colorbar(sm, ax=ax)
         cbar.set_ticks(sorted_ticks)
         cbar.set_ticklabels(sorted_labels)
+        
     elif init_mode == "single_star":
         # plot the errorbar of the mean number of star states at the final time point for each beta
         #NOTE: in single_star mode, we only have one time point (the final one), so we can directly plot mean_state vs beta with error bars
@@ -845,12 +856,12 @@ def Plot_nb_star(save_name, beta_BD, beta_c, max_beta, init_mode="full_star", df
         ax.set_xlabel(r'$\beta$')
         ax.set_ylabel(r'Final Mean Number of $\star$ States')
         beta_sg = kwargs.get('beta_sg', None)
-        beta_dm = kwargs.get('beta_dm', None)
+        beta_ds = kwargs.get('beta_ds', None)
         beta_uni = kwargs.get('beta_uni', None)
         if beta_sg is not None:
             ax.axvline(beta_sg, color='red', linestyle='--', label=r'$\beta_{SG}$')
-        if beta_dm is not None:
-            ax.axvline(beta_dm, color='green', linestyle=':', label=r'$\beta_{DM}$')
+        if beta_ds is not None:
+            ax.axvline(beta_ds, color='green', linestyle=':', label=r'$\beta_{DS}$')
         if beta_uni is not None:
             ax.axvline(beta_uni, color='blue', linestyle='-.', label=r'$\beta_{uni}$')
         ax.legend()
@@ -861,53 +872,31 @@ def Plot_nb_star(save_name, beta_BD, beta_c, max_beta, init_mode="full_star", df
     elif init_mode == "single_star":
         plt.savefig(save_path+f"{save_name}_nb_star_single.png", dpi=300)
 
-def Coal_time(N_list, beta, d, max_beta, save_name, n_runs=25, save_path=save_path):
+def Coal_time(N_list, beta, d, max_beta, save_name, n_runs=25, sampler=F_beta_Glauber, save_path=save_path, **kwargs):
     """
     Runs the coalescence time analysis for the Curie-Weiss model and saves data to a CSV.
     """
     
     all_data = []
-
     for N in N_list:
         print(f"Processing N={N}...")
         if save_name == "CW" or save_name == "SK":
-            G = nx.complete_graph(N)
-            if save_name == "CW":
-                couplings = (np.ones((N, N)) - np.eye(N)) / N
-            else:  
-                couplings = np.random.normal(0, 1/np.sqrt(N), size=(N, N))
-                couplings = (couplings + couplings.T) / 2  # Ensure symmetry J_ij = J_ji
-                np.fill_diagonal(couplings, 0)
+            G, couplings = create_complete_graph(N, model=save_name)
         elif save_name == "ER" or save_name == "RR":
             if save_name == "ER":
-                G = nx.erdos_renyi_graph(N, d/N)
+                G, couplings = create_ER_graph(N, d)
             if save_name == "RR":
-                G = nx.random_regular_graph(d, N)
-            couplings = np.triu(np.random.choice([-1, 1], size=(N, N)), k=1)
-            couplings += couplings.T  # account for the fact that the graph is not oriented
-            couplings = couplings * nx.to_numpy_array(G)
+                G, couplings = create_RR_graph(N, d)
         elif "RL" in save_name:
-            if d == 2:
-                L = int(round(np.sqrt(N)))
-                dim = (L, L)
-            if d == 3:
-                L = int(round(N**(1/3)))
-                dim = (L, L, L)
-            G = nx.grid_graph(dim, periodic=True)
-            actual_N = G.number_of_nodes()
-            if save_name == "RL_ferr":
-                couplings = np.ones((actual_N, actual_N)) - np.eye(actual_N)
-            elif save_name == "RL_sg":
-                couplings = np.triu(np.random.choice([-1, 1], size=(N, N)), k=1)
-                couplings += couplings.T
-                couplings = couplings * nx.to_numpy_array(G)
+            L = int(np.round(N**(1/d))) # avoid floating point issues
+            G, couplings = create_lattice_graph(L, d, model=save_name)
 
         print(f"  Processing beta={beta:.2f}...")
         coal_time_temp = []
         log_T_coal_over_N_temp = []
         
         for _ in range(n_runs):
-            _, coal_time = MCMC2_BC_fwd(beta, G, couplings)
+            _, coal_time = MCMC2_BC_fwd(beta, G, couplings, sampler=sampler)
             coal_time_temp.append(coal_time)
             log_T_coal_over_N_temp.append(np.log(coal_time) / N)
             
@@ -933,7 +922,7 @@ def Coal_time(N_list, beta, d, max_beta, save_name, n_runs=25, save_path=save_pa
         elif "sg" in save_name:
             save_path+="/sg/"
 
-    csv_path = save_path+f"{save_name}_coal_time.csv"
+    csv_path = save_path+f"{save_name}_coal_time_{sampler.__name__}.csv"
     try:
         df_existing = pd.read_csv(csv_path)
         df_new = pd.DataFrame(all_data)
@@ -945,7 +934,7 @@ def Coal_time(N_list, beta, d, max_beta, save_name, n_runs=25, save_path=save_pa
         df.to_csv(csv_path, index=False)
         print(f"Data successfully saved to {csv_path}")
 
-def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, df=None, save_path=save_path, max_nb_iter_MCMC2_BC=max_nb_iter_MCMC2_BC, **kwargs):
+def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, sampler=F_beta_Glauber, df=None, save_path=save_path, max_nb_iter_MCMC2_BC=max_nb_iter_MCMC2_BC, **kwargs):
     """
     Reads the generated data points and creates the 4 coalescence time plots.
     """
@@ -966,8 +955,9 @@ def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, df=None, save
             save_path+=f"figures/algo/latt/d{d}/sg/"
 
     if df is None:
-        df = pd.read_csv(f"{access_path}.csv")
-        
+        df = pd.read_csv(f"{access_path}_{sampler.__name__}.csv")
+
+
     N_list = sorted(df['N'].unique())
     betas = sorted(df['beta'].unique())
     
@@ -985,26 +975,33 @@ def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, df=None, save
     plt.imshow(coalescence_times_matrix, aspect='auto', origin='lower', 
                extent=[betas[0], betas[-1], min(N_list), max(N_list)], 
                cmap=plt.cm.viridis, norm=LogNorm())
-    plt.vlines(beta_c, min(N_list), max(N_list), color='k', linestyle='--', label=r'$\beta_c$')
+    if save_name == "CW" or "ferr" in save_name:
+        plt.vlines(beta_c, min(N_list), max(N_list), color='k', linestyle='-', label=r'$\beta_{PM}$')
+    else:
+        if d!=2:
+            plt.vlines(beta_c, min(N_list), max(N_list), color='k', linestyle='-', label=r'$\beta_{SG}$')
     if beta_uni != beta_c:
-        plt.vlines(beta_uni, min(N_list), max(N_list), color='b', linestyle='-.', label=r'$\beta_{uni}$')
+        plt.vlines(beta_uni, min(N_list), max(N_list), color='b', linestyle='-.', label=r'$\beta_{Uni}$')
     if save_name != "SK" and save_name != "ER" and save_name != "CW":
-        plt.vlines(beta_BD, min(N_list), max(N_list), color='r', linestyle=':', label=r'$\beta_{BD/Dob}$')
+        plt.vlines(beta_BD, min(N_list), max(N_list), color='r', linestyle='--', label=r'$\beta_{BD/Dobr}$')
     if save_name == "ER":
         deg_max = [np.floor(max_deg_ER_graph(N, d)) for N in N_list]
         beta_BD = [np.arctanh(1/deg) for deg in deg_max]
-        plt.axvspan(np.min(beta_BD), np.max(beta_BD), color='lightgray', alpha=0.5, label=r'$\beta_{BD/Dob}$ region')
+        plt.axvspan(np.min(beta_BD), np.max(beta_BD), color='red', alpha=0.5, label=r'$\beta_{BD/Dobr}$ region')
     if save_name == "SK":
         #plot the 1/sqrt(N) expected scaling for the SK model
         beta_BD_SK = 1 / np.sqrt(N_list)
-        plt.plot(beta_BD_SK, N_list, color='k', linestyle=':', label=r'$\beta_{BD} \sim 1/\sqrt{N}$')
+        plt.plot(beta_BD_SK, N_list, color='r', linestyle='--', label=r'$\beta_{BD/Dobr} \sim 1/\sqrt{N}$')
     plt.colorbar(label='Coalescence Time')
     plt.xlabel(r'Inverse Temperature $\beta$')
     plt.ylabel('System Size $N$')
-    plt.legend()
-    plt.title(fr'Coalescence Time vs $N$ and $\beta$ for {save_name}'+f' ($d=${d})' if d is not None else fr'Coalescence Time vs $N$ and $\beta$ for {save_name}', fontsize=20)
-    plt.savefig(save_path+f'{save_name}_heatmap.png')
-    plt.savefig(save_path+f'{save_name}_heatmap.svg')
+    if save_name == "ER" or save_name == "RR" or (save_name=="RL_sg" and d==3):
+        plt.legend(loc=(0.47, 0.8))
+    elif save_name == "SK":
+        plt.legend(loc=(0.5, 0.8))
+    else:
+        plt.legend()
+    plt.savefig(save_path+f'{save_name}_heatmap_{sampler.__name__}.png')
     plt.close()
 
     # --- Plot 1: Coalescence time vs Beta ---
@@ -1027,8 +1024,7 @@ def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, df=None, save
     plt.yscale('log')
     plt.ylabel('Coalescence Time')
     plt.legend()
-    plt.savefig(save_path+f'{save_name}_vs_beta.png')
-    plt.savefig(save_path+f'{save_name}_vs_beta.svg')
+    plt.savefig(save_path+f'{save_name}_vs_beta_{sampler.__name__}.png')
     plt.close()
 
     # --- Plot 2: Coalescence time vs N ---
@@ -1048,7 +1044,7 @@ def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, df=None, save
     sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmc.berlin)
     sm.set_array([])
     ticks = [0, np.max(beta_BD), beta_c, max_beta]
-    tick_labels = ['0', r'$\beta_{BD}$', r'$\beta_c$', f'{max_beta:.2f}']
+    tick_labels = ['0', r'$\beta_{BD/Dobr}$', r'$\beta_c$', f'{max_beta:.2f}']
 
     if beta_no_zero is not None and beta_no_zero not in ticks:
         ticks.append(beta_no_zero)
@@ -1066,8 +1062,7 @@ def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, df=None, save
     ax.set_xlabel('System Size $N$')
     ax.set_yscale('log')
     ax.set_ylabel('Coalescence Time')
-    fig.savefig(save_path+f'{save_name}_vs_N.png')
-    fig.savefig(save_path+f'{save_name}_vs_N.svg')
+    fig.savefig(save_path+f'{save_name}_vs_N_{sampler.__name__}.png')
     plt.close(fig)
 
     # --- Plot 3: log(T_coal)/N vs Beta ---
@@ -1089,8 +1084,7 @@ def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, df=None, save
     plt.xlabel(r'Inverse Temperature $\beta$')
     plt.ylabel(r'$\log(T_{coal})/N$')
     plt.legend()
-    plt.savefig(save_path+f'{save_name}_log_T_over_N.png')
-    plt.savefig(save_path+f'{save_name}_log_T_over_N.svg')
+    plt.savefig(save_path+f'{save_name}_log_T_over_N_{sampler.__name__}.png')
     plt.close()
 
     # --- Plot 4: log(T_coal)/N vs N at fixed beta ---
@@ -1122,8 +1116,7 @@ def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, df=None, save
     cbar.set_label(r'$\beta$')
     ax.set_xlabel('System Size $N$')
     ax.set_ylabel(r'$\log(T_{coal})/N$')
-    fig.savefig(save_path+f'{save_name}_log_T_over_N_vs_N.png')
-    fig.savefig(save_path+f'{save_name}_log_T_over_N_vs_N.svg')
+    fig.savefig(save_path+f'{save_name}_log_T_over_N_vs_N_{sampler.__name__}.png')
     plt.close(fig)
 
 def Physics(model, N_list, beta, save_name, n_runs=25, save_path=save_path, **kwargs):
@@ -1280,7 +1273,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
             ax.errorbar(sub_df['beta'], sub_df['mag_mean'], yerr=np.sqrt(sub_df['mag_var']), 
                         marker=marker_lst[i % len(marker_lst)], color=color_lst[i % len(color_lst)], linestyle='None')
             
-            ax.vlines(1.0, -0.05, 1.05, color='k', linestyle='--', label=r'$\beta_c$' if i == 0 else None)
+            ax.vlines(1.0, -0.05, 1.05, color='k', linestyle='-', label=r'$\beta_{PM}$' if i == 0 else None)
             if i < len(N_list)-1: 
                 ax.axhline(0, color='k', linestyle='-', linewidth=1)
             ax.set_yticks([0])
@@ -1292,7 +1285,6 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
         plt.xlabel(r'Inverse Temperature $\beta$')
         plt.subplots_adjust(left=0.15, right=0.95, top=0.95, bottom=0.1, hspace=0)
         plt.savefig(save_path+f"{save_name}_magnetization.png")
-        plt.savefig(save_path+f"{save_name}_magnetization.svg")
         
     elif model == 'ER' or model == 'RR':
         d = kwargs.get('d', 4)
@@ -1309,8 +1301,8 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
         theo_energy = np.array([-d/2 * np.tanh(b) for b in betas_theo])
         
         plt.figure()
-        plt.plot(betas_theo[betas_theo < beta_SG], theo_energy[betas_theo < beta_SG], '-r', label='RS Solution')
-        plt.plot(betas_theo[betas_theo >= beta_SG], theo_energy[betas_theo >= beta_SG], '--r')
+        plt.plot(betas_theo[betas_theo < beta_SG], theo_energy[betas_theo < beta_SG], 'm-', label='RS Solution')
+        plt.plot(betas_theo[betas_theo >= beta_SG], theo_energy[betas_theo >= beta_SG], 'm--')
         
         for i, N in enumerate(N_list):
             sub_df = df[df['N'] == N]
@@ -1318,17 +1310,17 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
                          marker=marker_lst[i % len(marker_lst)], color=color_lst[i % len(color_lst)], 
                          label=f'N={N}', linestyle='None')  
         if model == 'ER':
-            plt.axvspan(np.min(beta_BD), np.max(beta_BD), color='lightgray', alpha=0.5, label=r'$\beta_{BD}$ region')
+            plt.axvspan(np.min(beta_BD), np.max(beta_BD), color='red', alpha=0.5, label=r'$\beta_{BD/Dobr}$ region')
         else:
-            plt.vlines(beta_BD, np.min(theo_energy)*1.2, 0.1, color='b', linestyle=':', label=r'$\beta_{BD}$')
-        plt.vlines(beta_obs, np.min(theo_energy)*1.2, 0.1, color='g', linestyle='-.', label=r'$\tanh^{-1}\left(\frac{1}{d}\right)$' if model == 'ER' else r'$\tanh^{-1}\left(\frac{1}{d-1}\right)$')
-        plt.vlines(beta_SG, np.min(theo_energy)*1.2, 0.1, color='k', linestyle='--', label=r'$\beta_{SG}$')
+            plt.vlines(beta_BD, np.min(theo_energy)*1.2, 0.1, color='r', linestyle='--', label=r'$\beta_{BD/Dobr}$')
+        # plt.vlines(beta_obs, np.min(theo_energy)*1.2, 0.1, color='b', linestyle='-.', label=r'$\tanh^{-1}\left(\frac{1}{d}\right)$' if model == 'ER' else r'$\tanh^{-1}\left(\frac{1}{d-1}\right)$')
+        plt.vlines(beta_obs, np.min(theo_energy)*1.2, 0.1, color='b', linestyle='-.', label=r'$\beta_{Uni}$')
+        plt.vlines(beta_SG, np.min(theo_energy)*1.2, 0.1, color='k', linestyle='-', label=r'$\beta_{SG}$')
         plt.ylim(np.min(theo_energy)*1.1, 0.05)
         plt.xlabel(r'Inverse Temperature $\beta$')
         plt.ylabel('Energy per Spin')
-        plt.legend(loc=(0.62, 0.46))
+        plt.legend(loc='lower left')
         plt.savefig(save_path+f"{save_name}_energy.png")
-        plt.savefig(save_path+f"{save_name}_energy.svg")
         
     elif model == 'SK':
         beta_SG = 1
@@ -1338,13 +1330,13 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
         
         # Plot Energy
         fig1, ax1 = plt.subplots()
-        ax1.plot(betas_theo[betas_theo <= beta_SG], theo_energy[betas_theo <= beta_SG], '-r', label='RS Solution')
-        ax1.plot(betas_theo[betas_theo > beta_SG], theo_energy[betas_theo > beta_SG], '--r')
+        ax1.plot(betas_theo[betas_theo <= beta_SG], theo_energy[betas_theo <= beta_SG], 'm-', label='RS Solution')
+        ax1.plot(betas_theo[betas_theo > beta_SG], theo_energy[betas_theo > beta_SG], 'm--')
         
         # Plot Q
         fig2, ax2 = plt.subplots()
-        ax2.plot(betas_theo[betas_theo <= beta_SG], theo_q[betas_theo <= beta_SG], '-r', label='RS Solution')
-        ax2.plot(betas_theo[betas_theo > beta_SG], theo_q[betas_theo > beta_SG], '--r')
+        ax2.plot(betas_theo[betas_theo <= beta_SG], theo_q[betas_theo <= beta_SG], 'm-', label='RS Solution')
+        ax2.plot(betas_theo[betas_theo > beta_SG], theo_q[betas_theo > beta_SG], 'm--')
         
         for i, N in enumerate(N_list):
             sub_df = df[df['N'] == N]
@@ -1359,14 +1351,12 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
         ax1.set_ylabel('Energy per Spin')
         ax1.legend()
         fig1.savefig(save_path+f"{save_name}_energy.png")
-        fig1.savefig(save_path+f"{save_name}_energy.svg")
         
         # ax2.vlines(beta_SG, -0.1, 0.1, color='g', linestyle=':', label=r'$\beta_{SG}$')
         ax2.set_xlabel(r'Inverse Temperature $\beta$')
         ax2.set_ylabel(r'$q_{EA}$')
         ax2.legend()
         fig2.savefig(save_path+f"{save_name}_q.png")
-        fig2.savefig(save_path+f"{save_name}_q.svg")
 
     elif "RL" in model:
         if "ferr" in model:
@@ -1387,7 +1377,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
                     beta_c = 1/2 * np.log(1 + np.sqrt(2))
                 elif d == 3:
                     beta_c = 0.221654626
-                ax.vlines(beta_c, -0.05, 1.05, color='k', linestyle='--', label=r'$\beta_c$' if i == 0 else None)
+                ax.vlines(beta_c, -0.05, 1.05, color='k', linestyle='-', label=r'$\beta_{PM}$' if i == 0 else None)
                 if i < len(N_list)-1: 
                     ax.axhline(0, color='k', linestyle='-', linewidth=1)
                 ax.set_yticks([0])
@@ -1399,54 +1389,52 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
             plt.xlabel(r'Inverse Temperature $\beta$')
             plt.subplots_adjust(left=0.15, right=0.95, top=0.95, bottom=0.1, hspace=0)
             plt.savefig(save_path+f"{save_name}_magnetization.png")
-            plt.savefig(save_path+f"{save_name}_magnetization.svg")
 
             # plot the energy per site in the case of d=2
             if d==2:
                 theo_energy = np.array([theo_energy_per_site_ising_2d(beta) for beta in beta_theo])
                 plt.figure()
-                plt.plot(beta_theo[beta_theo<=beta_c], theo_energy[beta_theo<=beta_c], '-r', label='Theory')
-                plt.plot(beta_theo[beta_theo>beta_c], theo_energy[beta_theo>beta_c], '--r')
+                plt.plot(beta_theo[beta_theo<=beta_c], theo_energy[beta_theo<=beta_c], 'm-', label='Theory')
+                plt.plot(beta_theo[beta_theo>beta_c], theo_energy[beta_theo>beta_c], 'm--')
                 for i, N in enumerate(N_list):
                     sub_df = df[df['N'] == N]
                     plt.errorbar(sub_df['beta'], sub_df['energy_mean'], yerr=np.sqrt(sub_df['energy_var']), 
                                 marker=marker_lst[i % len(marker_lst)], color=color_lst[i % len(color_lst)], 
                                 label=f'N={N}', linestyle='None')  
                     
-                plt.vlines(beta_c, np.min(theo_energy)*1.2, 0.05, color='k', linestyle='--', label=r'$\beta_c$')
-                # plt.ylim(np.min(theo_energy)*1.1, 0.05)
+                plt.vlines(beta_c, np.min(theo_energy)*1.2, 0.2, color='k', linestyle='-', label=r'$\beta_{PM}$')
+                plt.ylim(np.min(theo_energy)*1.1, 0.1)
                 plt.xlabel(r'Inverse Temperature $\beta$')
                 plt.ylabel('Energy per Spin')
                 plt.legend()
                 plt.savefig(save_path+f"{save_name}_energy.png")
-                plt.savefig(save_path+f"{save_name}_energy.svg")
 
         elif "sg" in model: 
             if d == 2:
-                beta_SG = 0  # No spin glass phase in 2D
+                beta_SG = np.inf  # No spin glass phase in 2D
                 beta_c = 1/2 * np.log(1 + np.sqrt(2))
                 betas_theo = np.linspace(0, beta_c*1.1, 100)
+                beta_uni = np.arctanh(1/(2*d-1))
             if d == 3:
                 beta_SG = 0.83
                 beta_c = 0.221654626
+                beta_uni = np.arctanh(1/(2*d-1))
                 betas_theo = np.linspace(0, beta_SG*1.1, 100)
             plt.figure()
             theo_energy = np.array([-d*np.tanh(beta) for beta in betas_theo])  # Approximation from high-temperature expansion
-            plt.plot(betas_theo[betas_theo < beta_SG], theo_energy[betas_theo < beta_SG], '-r', label='Theory')
-            plt.plot(betas_theo[betas_theo >= beta_SG], theo_energy[betas_theo >= beta_SG], '--r')
+            plt.plot(betas_theo[betas_theo < beta_SG], theo_energy[betas_theo < beta_SG], 'm-', label='Theory')
+            plt.plot(betas_theo[betas_theo >= beta_SG], theo_energy[betas_theo >= beta_SG], 'm--')
             
             for i, N in enumerate(N_list):
                 sub_df = df[df['N'] == N]
                 plt.errorbar(sub_df['beta'], sub_df['energy_mean'], yerr=np.sqrt(sub_df['energy_var']), 
                              marker=marker_lst[i % len(marker_lst)], color=color_lst[i % len(color_lst)], 
                              label=f'N={N}', linestyle='None')  
-                
-            plt.vlines(beta_c, np.min(theo_energy)*1.2, 0.05, color='k', linestyle='--', label=r'$\beta_c$')
+            plt.vlines(beta_uni, np.min(theo_energy)*1.2, 0.2, color='b', linestyle='-.', label=r'$\beta_{Uni}$')
             if d == 3:
-                plt.vlines(beta_SG, np.min(theo_energy)*1.2, 0.05, color='g', linestyle=':', label=r'$\beta_{SG}$')
-            # plt.ylim(np.min(theo_energy)*1.1, 0.05)
+                plt.vlines(beta_SG, np.min(theo_energy)*1.2, 0.2, color='k', linestyle='-', label=r'$\beta_{SG}$')
+            plt.ylim(np.min(theo_energy)*1.1, 0.1)
             plt.xlabel(r'Inverse Temperature $\beta$')
             plt.ylabel('Energy per Spin')
             plt.legend()
             plt.savefig(save_path+f"{save_name}_energy.png")
-            plt.savefig(save_path+f"{save_name}_energy.svg")

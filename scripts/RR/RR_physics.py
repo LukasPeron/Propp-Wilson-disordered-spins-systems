@@ -10,7 +10,7 @@ beta_BD = np.arctanh(1/d)
 betas = np.linspace(0, beta_SG*1.2, 15)
 N_list = [100, 200, 500, 750, 1000]
 
-for beta in betas:
-    Physics(model="RR", N_list=N_list, beta=beta, save_name="RR", n_runs=10, d=d)
+# for beta in betas:
+#     Physics(model="RR", N_list=N_list, beta=beta, save_name="RR", n_runs=10, d=d)
 
 Plot_physics(model="RR", save_name="RR", d=4)

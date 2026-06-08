@@ -7,16 +7,12 @@ and the R^2 score vary as a function of beta for ALL models on combined graphs.
 
 from utils.cftp_func import *
 
-
-def power_law_fit(x, a, b, c):
-    # Fits a power law to find the exponent b
-    return a * np.power(x, b) + c
-
 model_list = ["ER", "RR", "CW", "SK", "RL_ferr2", "RL_sg2", "RL_ferr3", "RL_sg3"]  # Add RL models with dimensions specified
-
 # Define marker and color lists for the global exponent plot
 color_list = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown', 'tab:pink', 'tab:gray']
 marker_list = ['o', 's', 'P', 'D', 'X', '^', 'v', '<']
+# sampler = F_beta_Glauber
+sampler = F_beta_Metropolis
 
 # ==========================================
 # INITIALIZE GLOBAL FIGURES: Exponent vs Beta and R^2 vs Beta
@@ -29,13 +25,13 @@ for m_idx, model in enumerate(model_list):
     path_to_file = "/home/lperon/cftp_dis_spin/data/algo/"
     d=None
     if model in ["CW", "SK"]:
-        path_to_file += f"complet/{model}_coal_time.csv"
+        path_to_file += f"complet/{model}_coal_time_{sampler.__name__}.csv"
     elif model in ["ER", "RR"]:
-        path_to_file += f"random/{model}_coal_time.csv"
+        path_to_file += f"random/{model}_coal_time_{sampler.__name__}.csv"
     elif model in ["RL_ferr2", "RL_sg2", "RL_ferr3", "RL_sg3"]:
         d = int(model[-1])
         model = model.replace(f'{d}', '')
-        path_to_file += f"latt/d{d}/{model.replace('RL_', '')}/{model}_coal_time.csv"
+        path_to_file += f"latt/d{d}/{model.replace('RL_', '')}/{model}_coal_time_{sampler.__name__}.csv"
     print(path_to_file)
     df = pd.read_csv(path_to_file)
 
@@ -124,7 +120,7 @@ for m_idx, model in enumerate(model_list):
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     cbar = fig_fits.colorbar(sm, ax=ax_fits)
     cbar.set_label(r'$\beta$')
-    save_name = f"/home/lperon/cftp_dis_spin/figures/temp/power_law_fits_all_betas_{model}.png"
+    save_name = f"/home/lperon/cftp_dis_spin/figures/temp/power_law_fits_all_betas_{model}_{sampler.__name__}.png"
     if d!=None:
         save_name = save_name.replace(".png", f"_d{d}.png")
     fig_fits.savefig(save_name)
@@ -136,17 +132,25 @@ for m_idx, model in enumerate(model_list):
     if len(valid_betas) > 0:
         c = color_list[m_idx]
         m = marker_list[m_idx]
-        label = f"{model}"
-        if d!=None:
-            label += f" (d={d})"
+        if model in ["RL_ferr", "RL_sg"]:
+            if model == "RL_ferr" and d==2:
+                label = "F2D"
+            elif model == "RL_sg" and d==2:
+                label = "EA2D"
+            elif model == "RL_ferr" and d==3:
+                label = "F3D"
+            elif model == "RL_sg" and d==3:
+                label = "EA3D"
+        else:
+            label = model
             
         # Plot Exponent b vs Beta
         ax_exp_global.plot(valid_betas, exponents_b, marker=m, linestyle='-', 
-                           color=c, label=label, markersize=8, alpha=0.5)
+                           color=c, label=label, markersize=7)
         
         # Plot R^2 vs Beta
         ax_r2_global.plot(valid_betas, r2_scores, marker=m, linestyle='-', 
-                          color=c, label=label, markersize=8, alpha=0.5)
+                          color=c, label=label, markersize=7)
     else:
         print(f"[{model}] No valid beta fits available to plot global metrics.")
     all_b_exponents.extend(exponents_b)  # Collect all exponents for global reference
@@ -159,9 +163,9 @@ if len(all_b_exponents) > 0:
     ax_exp_global.axhline(mean_b_exponent, xmin=0, xmax=1, color='black', linestyle='--', label=f'Mean $b=${mean_b_exponent:.4f}')
 ax_exp_global.set_xlabel(r'$\beta$')
 ax_exp_global.set_ylabel('Power Law Exponent ($b$)')
-ax_exp_global.legend()
-ax_exp_global.set_title('Values of Exponent $b$ vs Beta for the fit\n$\\log(T_{coal})/N \sim a N^b + c$ across all models', fontsize=20)
-fig_exp_global.savefig("/home/lperon/cftp_dis_spin/figures/temp/exponent_vs_beta_all_models.png")
+ax_exp_global.legend(loc=(0.5, 0.5))
+# ax_exp_global.set_title('Values of Exponent $b$ vs Beta for the fit\n$\\log(T_{coal})/N \sim a N^b + c$ across all models', fontsize=20)
+fig_exp_global.savefig(f"/home/lperon/cftp_dis_spin/figures/temp/exponent_vs_beta_all_models_{sampler.__name__}.png")
 plt.close(fig_exp_global)
 
 # ==========================================
@@ -171,7 +175,7 @@ ax_r2_global.set_xlabel(r'$\beta$')
 ax_r2_global.set_ylabel(r'$R^2$ Score')
 ax_r2_global.legend()
 ax_r2_global.set_title('Values of $R^2$ Score vs Beta for the fit\n$\\log(T_{coal})/N \sim a N^b + c$ across all models', fontsize=20)
-fig_r2_global.savefig("/home/lperon/cftp_dis_spin/figures/temp/r2_vs_beta_all_models.png")
+fig_r2_global.savefig(f"/home/lperon/cftp_dis_spin/figures/temp/r2_vs_beta_all_models_{sampler.__name__}.png")
 plt.close(fig_r2_global)
 
 print("\nProcessing complete. Figures saved.")
