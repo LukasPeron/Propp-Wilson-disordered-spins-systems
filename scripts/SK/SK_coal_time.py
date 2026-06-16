@@ -12,7 +12,7 @@ max_beta = 0.3
 save_name = "SK"
 print(f"beta_BD = {beta_BD}", max_beta)
 betas = np.linspace(0, max_beta, 25, endpoint=True)
-for beta in betas:
-    Coal_time(N_list=N_list, beta=beta, d=np.nan, max_beta=max_beta, save_name=save_name, n_runs=10, sampler=F_beta_Metropolis)
+# for beta in betas:
+#     Coal_time(N_list=N_list, beta=beta, d=np.nan, max_beta=max_beta, save_name=save_name, n_runs=10, sampler=F_beta_Metropolis)
 
-Plot_coal_time(save_name=save_name, beta_BD = beta_BD, beta_c=beta_SG, beta_uni=beta_uni, max_beta=max_beta, sampler=F_beta_Metropolis)
+Plot_coal_time(save_name=save_name, beta_BD = beta_BD, beta_c=beta_SG, beta_uni=beta_uni, max_beta=max_beta, sampler=F_beta_Glauber)

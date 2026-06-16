@@ -20,22 +20,22 @@ from scipy.optimize import curve_fit
 plt.rcParams.update({
     'figure.figsize': (8, 6),
     'font.size': 22,
-    'lines.linewidth': 4,
+    'lines.linewidth': 2,
     'axes.grid': True,
-    'legend.fontsize': 12,
+    'legend.fontsize': 16,
     'xtick.major.size': 5,
     'ytick.major.size': 5,
     'xtick.minor.size': 3,
     'ytick.minor.size': 3,
     'savefig.dpi': 300,
     'savefig.bbox': 'tight',
-    'lines.markersize': 10,
+    'lines.markersize': 8,
     'font.family': 'serif',
     'font.serif': ['Latin Modern Roman'],
     'mathtext.fontset': 'cm',
     'axes.spines.top': False,
     'axes.spines.right': False,
-    'legend.frameon': False
+    'legend.frameon': False,
 })
 
 save_path = "/home/lperon/cftp_dis_spin/"
@@ -768,7 +768,7 @@ def Nb_star(N, beta, G, couplings, beta_c, save_name, n_runs=25, init_mode="full
         df.to_csv(csv_path, index=False)
         print(f"Data successfully saved to {csv_path}")
 
-def Plot_nb_star(save_name, beta_BD, beta_c, max_beta, init_mode="full_star", df=None, save_path=save_path, **kwargs):
+def Plot_nb_star(save_name, beta_BD, beta_c, max_beta, init_mode="full_star", df=None, save_path=save_path, sampler=F_beta_Glauber, **kwargs):
     """
     Reads the generated data points and creates the convergence plot.
     """
@@ -861,16 +861,18 @@ def Plot_nb_star(save_name, beta_BD, beta_c, max_beta, init_mode="full_star", df
         if beta_sg is not None:
             ax.axvline(beta_sg, color='red', linestyle='--', label=r'$\beta_{SG}$')
         if beta_ds is not None:
-            ax.axvline(beta_ds, color='green', linestyle=':', label=r'$\beta_{DS}$')
+            ax.axvline(beta_ds, color='green', linestyle=':', label=r'$\beta_{DS}$ from lit.')
         if beta_uni is not None:
             ax.axvline(beta_uni, color='blue', linestyle='-.', label=r'$\beta_{uni}$')
         ax.legend()
     
     # Save outputs
     if init_mode == "full_star":
-        plt.savefig(save_path+f"{save_name}_nb_star.png", dpi=300)
+        plt.savefig(save_path+f"{save_name}_nb_star_{sampler.__name__}.png", dpi=300)
+        plt.savefig(save_path+f"{save_name}_nb_star_{sampler.__name__}.pdf", dpi=300)
     elif init_mode == "single_star":
-        plt.savefig(save_path+f"{save_name}_nb_star_single.png", dpi=300)
+        plt.savefig(save_path+f"{save_name}_nb_star_single_{sampler.__name__}.png", dpi=300)
+        plt.savefig(save_path+f"{save_name}_nb_star_single_{sampler.__name__}.pdf", dpi=300)
 
 def Coal_time(N_list, beta, d, max_beta, save_name, n_runs=25, sampler=F_beta_Glauber, save_path=save_path, **kwargs):
     """
@@ -987,21 +989,28 @@ def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, sampler=F_bet
     if save_name == "ER":
         deg_max = [np.floor(max_deg_ER_graph(N, d)) for N in N_list]
         beta_BD = [np.arctanh(1/deg) for deg in deg_max]
-        plt.axvspan(np.min(beta_BD), np.max(beta_BD), color='red', alpha=0.5, label=r'$\beta_{BD/Dobr}$ region')
+        plt.axvspan(np.min(beta_BD), np.max(beta_BD), color='red', alpha=0.25, label=r'$\beta_{BD/Dobr}$ region')
     if save_name == "SK":
         #plot the 1/sqrt(N) expected scaling for the SK model
-        beta_BD_SK = 1 / np.sqrt(N_list)
-        plt.plot(beta_BD_SK, N_list, color='r', linestyle='--', label=r'$\beta_{BD/Dobr} \sim 1/\sqrt{N}$')
+        # beta_BD_SK = 1 / np.sqrt(N_list)
+        beta_BD_SK = np.sqrt(np.pi/2) * 1/np.sqrt(N_list)
+        plt.plot(beta_BD_SK, N_list, color='r', linestyle='--', label=r'$\beta_{BD/Dobr} = \sqrt{\frac{\pi}{2N}}$')
+    if save_name == "RL_sg":
+        if d==2:
+            plt.vlines(0.59, min(N_list), max(N_list), color='g', linestyle=':', label=r'$\beta_{DS}$ from lit.')
+        elif d==3:
+            plt.vlines(0.26, min(N_list), max(N_list), color='g', linestyle=':', label=r'$\beta_{DS}$ from lit.')
     plt.colorbar(label='Coalescence Time')
     plt.xlabel(r'Inverse Temperature $\beta$')
     plt.ylabel('System Size $N$')
     if save_name == "ER" or save_name == "RR" or (save_name=="RL_sg" and d==3):
-        plt.legend(loc=(0.47, 0.8))
+        plt.legend(loc=(0.47, 0.65))
     elif save_name == "SK":
-        plt.legend(loc=(0.5, 0.8))
+        plt.legend(loc=(0.48, 0.8))
     else:
         plt.legend()
     plt.savefig(save_path+f'{save_name}_heatmap_{sampler.__name__}.png')
+    plt.savefig(save_path+f'{save_name}_heatmap_{sampler.__name__}.pdf')
     plt.close()
 
     # --- Plot 1: Coalescence time vs Beta ---
@@ -1025,6 +1034,7 @@ def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, sampler=F_bet
     plt.ylabel('Coalescence Time')
     plt.legend()
     plt.savefig(save_path+f'{save_name}_vs_beta_{sampler.__name__}.png')
+    plt.savefig(save_path+f'{save_name}_vs_beta_{sampler.__name__}.pdf')
     plt.close()
 
     # --- Plot 2: Coalescence time vs N ---
@@ -1063,6 +1073,7 @@ def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, sampler=F_bet
     ax.set_yscale('log')
     ax.set_ylabel('Coalescence Time')
     fig.savefig(save_path+f'{save_name}_vs_N_{sampler.__name__}.png')
+    fig.savefig(save_path+f'{save_name}_vs_N_{sampler.__name__}.pdf')
     plt.close(fig)
 
     # --- Plot 3: log(T_coal)/N vs Beta ---
@@ -1085,6 +1096,7 @@ def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, sampler=F_bet
     plt.ylabel(r'$\log(T_{coal})/N$')
     plt.legend()
     plt.savefig(save_path+f'{save_name}_log_T_over_N_{sampler.__name__}.png')
+    plt.savefig(save_path+f'{save_name}_log_T_over_N_{sampler.__name__}.pdf')
     plt.close()
 
     # --- Plot 4: log(T_coal)/N vs N at fixed beta ---
@@ -1117,6 +1129,7 @@ def Plot_coal_time(save_name, beta_BD, beta_c, beta_uni, max_beta, sampler=F_bet
     ax.set_xlabel('System Size $N$')
     ax.set_ylabel(r'$\log(T_{coal})/N$')
     fig.savefig(save_path+f'{save_name}_log_T_over_N_vs_N_{sampler.__name__}.png')
+    fig.savefig(save_path+f'{save_name}_log_T_over_N_vs_N_{sampler.__name__}.pdf')
     plt.close(fig)
 
 def Physics(model, N_list, beta, save_name, n_runs=25, save_path=save_path, **kwargs):
@@ -1285,6 +1298,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
         plt.xlabel(r'Inverse Temperature $\beta$')
         plt.subplots_adjust(left=0.15, right=0.95, top=0.95, bottom=0.1, hspace=0)
         plt.savefig(save_path+f"{save_name}_magnetization.png")
+        plt.savefig(save_path+f"{save_name}_magnetization.pdf")
         
     elif model == 'ER' or model == 'RR':
         d = kwargs.get('d', 4)
@@ -1310,7 +1324,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
                          marker=marker_lst[i % len(marker_lst)], color=color_lst[i % len(color_lst)], 
                          label=f'N={N}', linestyle='None')  
         if model == 'ER':
-            plt.axvspan(np.min(beta_BD), np.max(beta_BD), color='red', alpha=0.5, label=r'$\beta_{BD/Dobr}$ region')
+            plt.axvspan(np.min(beta_BD), np.max(beta_BD), color='red', alpha=0.25, label=r'$\beta_{BD/Dobr}$ region')
         else:
             plt.vlines(beta_BD, np.min(theo_energy)*1.2, 0.1, color='r', linestyle='--', label=r'$\beta_{BD/Dobr}$')
         # plt.vlines(beta_obs, np.min(theo_energy)*1.2, 0.1, color='b', linestyle='-.', label=r'$\tanh^{-1}\left(\frac{1}{d}\right)$' if model == 'ER' else r'$\tanh^{-1}\left(\frac{1}{d-1}\right)$')
@@ -1321,6 +1335,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
         plt.ylabel('Energy per Spin')
         plt.legend(loc='lower left')
         plt.savefig(save_path+f"{save_name}_energy.png")
+        plt.savefig(save_path+f"{save_name}_energy.pdf")
         
     elif model == 'SK':
         beta_SG = 1
@@ -1351,12 +1366,14 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
         ax1.set_ylabel('Energy per Spin')
         ax1.legend()
         fig1.savefig(save_path+f"{save_name}_energy.png")
+        fig1.savefig(save_path+f"{save_name}_energy.pdf")
         
         # ax2.vlines(beta_SG, -0.1, 0.1, color='g', linestyle=':', label=r'$\beta_{SG}$')
         ax2.set_xlabel(r'Inverse Temperature $\beta$')
         ax2.set_ylabel(r'$q_{EA}$')
         ax2.legend()
         fig2.savefig(save_path+f"{save_name}_q.png")
+        fig2.savefig(save_path+f"{save_name}_q.pdf")
 
     elif "RL" in model:
         if "ferr" in model:
@@ -1389,6 +1406,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
             plt.xlabel(r'Inverse Temperature $\beta$')
             plt.subplots_adjust(left=0.15, right=0.95, top=0.95, bottom=0.1, hspace=0)
             plt.savefig(save_path+f"{save_name}_magnetization.png")
+            plt.savefig(save_path+f"{save_name}_magnetization.pdf")
 
             # plot the energy per site in the case of d=2
             if d==2:
@@ -1408,6 +1426,7 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
                 plt.ylabel('Energy per Spin')
                 plt.legend()
                 plt.savefig(save_path+f"{save_name}_energy.png")
+                plt.savefig(save_path+f"{save_name}_energy.pdf")
 
         elif "sg" in model: 
             if d == 2:
@@ -1438,3 +1457,4 @@ def Plot_physics(model, save_name, df=None, save_path=save_path, **kwargs):
             plt.ylabel('Energy per Spin')
             plt.legend()
             plt.savefig(save_path+f"{save_name}_energy.png")
+            plt.savefig(save_path+f"{save_name}_energy.pdf")

@@ -109,6 +109,7 @@ plt.xlabel("N")
 plt.ylabel(r"Estimated $\beta_{DS}$")
 plt.legend()
 plt.savefig(save_path_fig + "SK_beta_damage_spreading.png", dpi=300)
+plt.savefig(save_path_fig + "SK_beta_damage_spreading.pdf", dpi=300)
 plt.close()
 
 # Plot 1: Log(T_coal) vs beta for all N
@@ -141,4 +142,5 @@ ax.set_ylabel(r"$\log(T_{coal})$")
 ax.legend()
 fig.tight_layout()
 fig.savefig(save_path_fig + "SK_damage_spreading_coal.png", dpi=300)
+fig.savefig(save_path_fig + "SK_damage_spreading_coal.pdf", dpi=300)
 plt.close()

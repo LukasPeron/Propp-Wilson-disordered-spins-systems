@@ -130,14 +130,15 @@ for d in [2, 3]:
         # L_fit = np.linspace(min(L_lists[d][3:]), max(L_lists[d][3:]), 100)
         # beta_DS_fit = power_law_fit(L_fit, *popt_beta_DS)
         # plt.plot(L_fit, beta_DS_fit, 'k-', label=f'Power-law fit $\searrow$ {popt_beta_DS[2]:.4f}', linewidth=2)
-        plt.axhline(np.mean(beta_DS_estimated[3:]), 0, np.max(L_lists[d])*1.1, color='k', linestyle='--', label=fr'Mean $\beta_{{DS}}={np.mean(beta_DS_estimated[3:]):.4f}$ ($L\geq${L_lists[d][3]})')
+        plt.axhline(np.mean(beta_DS_estimated[3:]), 0, np.max(L_lists[d])*1.1, color='k', linestyle='--', label=fr'$\beta_{{DS}}={np.mean(beta_DS_estimated[3:]):.4f}\pm {2*np.std(beta_DS_estimated[3:]):.4f}$ ($L\geq${L_lists[d][3]})')
         if model == "RL_sg":
-            plt.axhline(beta_ds, 0, np.max(L_lists[d])*1.1, color='g', linestyle=':', label=r'$\beta_{DS}$ from literature')
+            plt.axhline(beta_ds, 0, np.max(L_lists[d])*1.1, color='g', linestyle=':', label=r'$\beta_{DS}$ from lit.')
             plt.axhline(beta_uni, 0, np.max(L_lists[d])*1.1, color='b', linestyle='-.', label=r'$\beta_{Uni}$')
         plt.xlabel(f"L (d={d})")
         plt.ylabel(r"Estimated $\beta_{DS}$")
         plt.legend()
         plt.savefig(current_save_path_fig + f"{model}_beta_damage_spreading.png", dpi=300)
+        plt.savefig(current_save_path_fig + f"{model}_beta_damage_spreading.pdf", dpi=300)
         plt.close()
 
         # Plot 1: Log(T_coal) vs beta for all N
@@ -167,7 +168,7 @@ for d in [2, 3]:
         else:
             ax.axvline(beta_BD, color='r', linestyle='--', label=r'$\beta_{BD/Dobr}$')
             ax.axvline(beta_uni, color='b', linestyle='-.', label=r'$\beta_{Uni}$')
-            ax.axvline(beta_ds, color='g', linestyle=':', label=r'$\beta_{DS}$')
+            ax.axvline(beta_ds, color='g', linestyle=':', label=r'$\beta_{DS}$ from lit.')
             if d == 3:
                 ax.axvline(beta_sg, color='k', linestyle='-', label=r'$\beta_{SG}$')
 
@@ -178,4 +179,5 @@ for d in [2, 3]:
         ax.legend()
         fig.tight_layout()
         fig.savefig(current_save_path_fig + f"{model}_damage_spreading_coal.png", dpi=300)
+        fig.savefig(current_save_path_fig + f"{model}_damage_spreading_coal.pdf", dpi=300)
         plt.close()

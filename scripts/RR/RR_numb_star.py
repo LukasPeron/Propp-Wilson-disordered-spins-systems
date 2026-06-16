@@ -17,7 +17,7 @@ max_beta = beta_uni * 1.2
 betas = np.linspace(0, max_beta, 15, endpoint=True)
 save_name = "RR"
 
-for beta in betas:
-    Nb_star(N=N, beta=beta, G=G, couplings=couplings, beta_c=beta_SG, save_name=save_name, n_runs=10)
+# for beta in betas:
+#     Nb_star(N=N, beta=beta, G=G, couplings=couplings, beta_c=beta_SG, save_name=save_name, n_runs=10)
 
-Plot_nb_star(save_name=save_name, beta_BD=beta_BD, beta_c=beta_SG, max_beta=max_beta)
+Plot_nb_star(save_name=save_name, beta_BD=beta_BD, beta_c=beta_SG, max_beta=max_beta, sampler=F_beta_Glauber)
