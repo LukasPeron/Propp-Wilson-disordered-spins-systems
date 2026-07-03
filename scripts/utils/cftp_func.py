@@ -38,7 +38,7 @@ plt.rcParams.update({
     'legend.frameon': False,
 })
 
-save_path = "/home/lperon/cftp_dis_spin/"
+save_path = "your_home_here"
 max_nb_iter_MCMC2_BC = 2**22
 
 def power_law_log_fit(x, a, b, c):
@@ -695,6 +695,120 @@ def simulate_n_configs(beta, G, couplings, num_configs=100, max_iter=max_nb_iter
     #     print(f"-> WARNING: Failed to coalesce within {max_iter} steps.")
         
     return coal_time
+
+@njit
+def _star_time_by_node_core(beta, N, adj_indices, adj_indptr, adj_weights, adj_abs_weights, max_iter, sampler):
+	config = np.zeros(N, dtype=np.int8)
+	num_stars = N
+
+	H_bar = np.zeros(N, dtype=np.float64)
+	M = np.zeros(N, dtype=np.float64)
+	star_time = np.zeros(N, dtype=np.float64)
+
+	# Full-star initialization: every node starts in state 0.
+	for v in range(N):
+		start_idx = adj_indptr[v]
+		end_idx = adj_indptr[v + 1]
+		for i in range(start_idx, end_idx):
+			u = adj_indices[i]
+			M[u] += adj_abs_weights[i]
+
+	for timestep in range(max_iter):
+		for i in range(N):
+			if config[i] == 0:
+				star_time[i] += 1.0
+
+		if num_stars == 0:
+			return star_time, timestep
+
+		v = np.random.randint(0, N)
+		s = 1 if np.random.rand() < 0.5 else -1
+		r = np.random.rand()
+
+		current_state = config[v]
+
+		if current_state != s:
+			h_bar = H_bar[v]
+			m = M[v]
+
+			h_plus = h_bar + s * m
+			h_minus = h_bar - s * m
+
+			if r < sampler(beta, -2 * s * h_minus):
+				new_state = s
+			elif r > sampler(beta, -2 * s * h_plus) and current_state == -s:
+				new_state = -s
+			else:
+				new_state = 0
+
+			if current_state != new_state:
+				config[v] = new_state
+
+				if current_state == 0:
+					num_stars -= 1
+				elif new_state == 0:
+					num_stars += 1
+
+				start_idx = adj_indptr[v]
+				end_idx = adj_indptr[v + 1]
+				for i in range(start_idx, end_idx):
+					u = adj_indices[i]
+					w = adj_weights[i]
+					aw = adj_abs_weights[i]
+
+					if current_state != 0:
+						H_bar[u] -= w * current_state
+					else:
+						M[u] -= aw
+
+					if new_state != 0:
+						H_bar[u] += w * new_state
+					else:
+						M[u] += aw
+
+	return star_time, max_iter
+
+def run_star_time_experiment(beta, G, couplings, n_runs=10, max_iter=max_nb_iter_MCMC2_BC):
+    node_list = list(G.nodes())
+    N = G.number_of_nodes()
+    node_to_idx = {node: idx for idx, node in enumerate(node_list)}
+    edges_count = sum(1 for v in node_list for _ in G.neighbors(v))
+    adj_indices = np.zeros(edges_count, dtype=np.int32)
+    adj_weights = np.zeros(edges_count, dtype=np.float64)
+    adj_abs_weights = np.zeros(edges_count, dtype=np.float64)
+    adj_indptr = np.zeros(N + 1, dtype=np.int32)
+
+    ptr = 0
+    for i, v_node in enumerate(node_list):
+        adj_indptr[i] = ptr
+        for u_node in G.neighbors(v_node):
+            j = node_to_idx[u_node]
+            w = couplings[j, i]
+            adj_indices[ptr] = j
+            adj_weights[ptr] = w
+            adj_abs_weights[ptr] = np.abs(w)
+            ptr += 1
+
+    adj_indptr[N] = ptr
+
+    node_star_times = []
+    final_steps = []
+
+    for _ in range(n_runs):
+        star_time, final_step = _star_time_by_node_core(
+            beta,
+            N,
+            adj_indices,
+            adj_indptr,
+            adj_weights,
+            adj_abs_weights,
+            max_iter,
+            F_beta_Glauber,
+        )
+        node_star_times.append(star_time)
+        final_steps.append(final_step)
+
+    return np.asarray(node_star_times), np.asarray(final_steps)
 
 def Nb_star(N, beta, G, couplings, beta_c, save_name, n_runs=25, init_mode="full_star", save_path=save_path, **kwargs):
     """
