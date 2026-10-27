@@ -10,7 +10,8 @@ This repository contains the work I have done during my Master 2 Internship at I
 - Spin glass model on random regular graphs with $\pm 1$ couplings
 
 All the results can be found in the "figures" folder in which one can find the coupling time analysis in "algo" and the observables predictions in "physics".
-See also [This repository](https://github.com/LouiseBudzynski/Bounding_Chain_Disordered_Ising_Models) and the paper we wrote (to be added).
+
+See also [Bounding_Chain_Disordered_Ising_Models](https://github.com/LouiseBudzynski/Bounding_Chain_Disordered_Ising_Models) for a more recent implementation of this code done by Dr. Budzynski and the paper we wrote (to be added).
 
 For any further information, please contact [lukas.peron@ens.psl.eu](mailto:lukas.peron@ens.psl.eu)
 
